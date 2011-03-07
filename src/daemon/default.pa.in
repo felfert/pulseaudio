@@ -46,35 +46,58 @@ load-module module-augment-properties
 ### Load audio drivers statically (it's probably better to not load
 ### these drivers manually, but instead use module-udev-detect --
 ### see below -- for doing this automatically)
+@if @HAVE_ALSA@
 #load-module module-alsa-sink
 #load-module module-alsa-source device=hw:1,0
+@endif
+@if @HAVE_OSS_OUTPUT@
 #load-module module-oss device="/dev/dsp" sink_name=output source_name=input
 #load-module module-oss-mmap device="/dev/dsp" sink_name=output source_name=input
+@endif
+@if @OS_IS_WIN32@
+load-module module-waveout sink_name=output source_name=input
+@endif
 #load-module module-null-sink
 #load-module module-pipe-sink
 
 ### Automatically load driver modules depending on the hardware available
+@if @HAVE_UDEV@
 .ifexists module-udev-detect@PA_SOEXT@
 load-module module-udev-detect
 .else
+@else
+@if @HAVE_HAL
+.ifexists module-hal-detect@PA_SOEXT@
+load-module module-hal-detect
+.else
+@else
+.ifexists module-detect@PA_SOEXT@
+@endif
+@endif
 ### Alternatively use the static hardware detection module (for systems that
 ### lack udev support)
 load-module module-detect
 .endif
 
+@if @HAVE_BLUEZ@
 ### Automatically load driver modules for Bluetooth hardware
 .ifexists module-bluetooth-discover@PA_SOEXT@
 load-module module-bluetooth-discover
 .endif
 
+@endif
+@if @HAVE_SYS_UN_H@
 ### Load several protocols
 .ifexists module-esound-protocol-unix@PA_SOEXT@
 load-module module-esound-protocol-unix
 .endif
+load-module module-native-protocol-unix
+@endif
+@if @HAVE_DBUS@
 .ifexists module-dbus-protocol@PA_SOEXT@
 load-module module-dbus-protocol
 .endif
-load-module module-native-protocol-unix
+@endif
 
 ### Network access (may be configured with paprefs, so leave this commented
 ### here if you plan to use paprefs)
@@ -83,9 +106,6 @@ load-module module-native-protocol-unix
 #load-module module-zeroconf-publish
 
 @if @OS_IS_WIN32@
-# Load audio drivers statically
-load-module module-waveout sink_name=output source_name=input
-
 # Load audio drivers automatically on access
 #add-autoload-sink output module-waveout sink_name=output source_name=input
 #add-autoload-source input module-waveout sink_name=output source_name=input
@@ -135,6 +155,8 @@ load-module module-position-event-sounds
 ### Cork music streams when a phone stream is active
 load-module module-cork-music-on-phone
 
+@endif
+@if @HAVE_X11@
 # X11 modules should not be started from default.pa so that one daemon
 # can be shared by multiple sessions.
 
