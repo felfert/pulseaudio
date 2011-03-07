@@ -36,9 +36,7 @@ noinst_DATA = \
 	default.pa.5.xml
 
 %.xml: %.xml.in Makefile
-	$(AM_V_GEN) sed -e 's,@pulseconfdir\@,$(pulseconfdir),g' \
-	    -e 's,@PACKAGE_BUGREPORT\@,$(PACKAGE_BUGREPORT),g' \
-            -e 's,@PACKAGE_URL\@,$(PACKAGE_URL),g' $< > $@
+	$(AM_V_GEN) $(AWK) -v configfile=$(top_builddir)/config.h -f $(top_srcdir)/process-in.awk pulseconfdir=$(pulseconfdir) $< > $@
 
 xmllint: $(noinst_DATA)
 	for f in $(noinst_DATA) ; do \

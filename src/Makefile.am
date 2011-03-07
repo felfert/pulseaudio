@@ -1944,24 +1944,27 @@ module_rygel_media_server_la_CFLAGS = $(AM_CFLAGS) $(DBUS_CFLAGS)
 
 CLEANFILES += esdcompat client.conf default.pa system.pa daemon.conf start-pulseaudio-x11 start-pulseaudio-kde daemon/pulseaudio.desktop daemon/pulseaudio-kde.desktop
 
+AWK_in=$(AWK) -v configfile=$(top_builddir)/config.h -f $(top_srcdir)/process-in.awk \
+	PACTL_BINARY=$(bindir)/pactl \
+	PA_BINARY=$(PA_BINARY) \
+	PA_DEFAULT_CONFIG_FILE=$(PA_DEFAULT_CONFIG_DIR)/default.pa \
+	PA_DLSEARCHPATH=$(modlibexecdir) \
+	PA_SOEXT=.so
+
 esdcompat: daemon/esdcompat.in Makefile
-	$(AM_V_GEN) sed -e 's,@PACKAGE_VERSION\@,$(PACKAGE_VERSION),g' \
-		-e 's,@PACKAGE_NAME\@,$(PACKAGE_NAME),g' \
-		-e 's,@PA_BINARY\@,$(PA_BINARY),g' < $< > $@
+	$(AM_V_GEN) $(AWK_in) $< > $@
 	$(AM_V_at) chmod +x esdcompat
 
 start-pulseaudio-x11: daemon/start-pulseaudio-x11.in Makefile
-	$(AM_V_GEN) sed -e 's,@PA_BINARY\@,$(PA_BINARY),g' \
-		-e 's,@PACTL_BINARY\@,$(bindir)/pactl,g' < $< > $@
+	$(AM_V_GEN) $(AWK_in) $< > $@
 	$(AM_V_at) chmod +x start-pulseaudio-x11
 
 start-pulseaudio-kde: daemon/start-pulseaudio-kde.in Makefile
-	$(AM_V_GEN) sed -e 's,@PA_BINARY\@,$(PA_BINARY),g' \
-		-e 's,@PACTL_BINARY\@,$(bindir)/pactl,g' < $< > $@
+	$(AM_V_GEN) $(AWK_in) $< > $@
 	$(AM_V_at) chmod +x start-pulseaudio-kde
 
 client.conf: pulse/client.conf.in Makefile
-	$(AM_V_GEN) sed -e 's,@PA_BINARY\@,$(PA_BINARY),g' < $< > $@
+	$(AM_V_GEN) $(AWK_in) $< > $@
 
 if OS_IS_WIN32
 default.pa: daemon/default.pa.win32
@@ -1970,18 +1973,13 @@ system.pa: daemon/default.pa.win32
 	cp $< $@
 else
 default.pa: daemon/default.pa.in Makefile
-	$(AM_V_GEN) sed -e 's,@PA_BINARY\@,$(PA_BINARY),g' \
-            -e 's,@PA_DLSEARCHPATH\@,$(modlibexecdir),g' \
-	    -e 's,@PA_SOEXT\@,.so,g' < $< > $@
+	$(AM_V_GEN) $(AWK_in) $< > $@
 system.pa: daemon/system.pa.in Makefile
-	$(AM_V_GEN) sed -e 's,@PA_BINARY\@,$(PA_BINARY),g' \
-            -e 's,@PA_DLSEARCHPATH\@,$(modlibexecdir),g' \
-	    -e 's,@PA_SOEXT\@,.so,g' < $< > $@
+	$(AM_V_GEN) $(AWK_in) $< > $@
 endif
 
 daemon.conf: daemon/daemon.conf.in Makefile
-	$(AM_V_GEN) sed -e 's,@PA_DLSEARCHPATH\@,$(modlibexecdir),g' \
-		-e 's,@PA_DEFAULT_CONFIG_FILE\@,$(DEFAULT_CONFIG_DIR),g' < $< > $@
+	$(AM_V_GEN) $(AWK_in) $< > $@
 
 if OS_IS_WIN32
 SYMLINK_PROGRAM=cd $(DESTDIR)$(bindir) && cp

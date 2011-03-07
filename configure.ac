@@ -22,7 +22,7 @@
 
 AC_PREREQ(2.63)
 
-AC_INIT([pulseaudio],[m4_esyscmd(./git-version-gen .tarball-version)],[mzchyfrnhqvb (at) 0pointer (dot) net])
+AC_INIT([pulseaudio],[m4_esyscmd(./git-version-gen .tarball-version)],[mzchyfrnhqvb (at) 0pointer (dot) net],[pulseaudio],[http://pulseaudio.org/])
 AC_CONFIG_SRCDIR([src/daemon/main.c])
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_HEADERS([config.h])
@@ -34,7 +34,6 @@ m4_define(pa_minor, `echo $VERSION | cut -d. -f2 | cut -d- -f1`)
 AC_SUBST(PA_MAJOR, pa_major)
 AC_SUBST(PA_MINOR, pa_minor)
 AC_SUBST(PA_MAJORMINOR, pa_major.pa_minor)
-AC_SUBST(PACKAGE_URL, [http://pulseaudio.org/])
 
 AC_SUBST(PA_API_VERSION, 12)
 AC_SUBST(PA_PROTOCOL_VERSION, 21)
