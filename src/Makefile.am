@@ -98,7 +98,6 @@ EXTRA_DIST = \
 		daemon/daemon.conf.in \
 		daemon/default.pa.in \
 		daemon/system.pa.in \
-		daemon/default.pa.win32 \
 		depmod.py \
 		daemon/esdcompat.in \
 		daemon/start-pulseaudio-x11.in \
@@ -1966,19 +1965,13 @@ start-pulseaudio-kde: daemon/start-pulseaudio-kde.in Makefile
 client.conf: pulse/client.conf.in Makefile
 	$(AM_V_GEN) $(AWK_in) $< > $@
 
-if OS_IS_WIN32
-default.pa: daemon/default.pa.win32
-	cp $< $@
-system.pa: daemon/default.pa.win32
-	cp $< $@
-else
+daemon.conf: daemon/daemon.conf.in Makefile
+	$(AM_V_GEN) $(AWK_in) $< > $@
+
 default.pa: daemon/default.pa.in Makefile
 	$(AM_V_GEN) $(AWK_in) $< > $@
-system.pa: daemon/system.pa.in Makefile
-	$(AM_V_GEN) $(AWK_in) $< > $@
-endif
 
-daemon.conf: daemon/daemon.conf.in Makefile
+system.pa: daemon/system.pa.in Makefile
 	$(AM_V_GEN) $(AWK_in) $< > $@
 
 if OS_IS_WIN32
