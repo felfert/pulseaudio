@@ -25,7 +25,9 @@
 ; allow-exit = yes
 ; use-pid-file = yes
 ; system-instance = no
+@if @HAVE_DBUS@
 ; local-server-type = user
+@endif
 ; enable-shm = yes
 ; shm-size-bytes = 0 # setting this 0 will use the system-default, usually 64 MiB
 ; lock-memory = no
@@ -57,6 +59,7 @@
 
 ; flat-volumes = yes
 
+@if @HAVE_SYS_RESOURCE_H@
 ; rlimit-fsize = -1
 ; rlimit-data = -1
 ; rlimit-stack = -1
@@ -72,6 +75,7 @@
 ; rlimit-nice = 31
 ; rlimit-rtprio = 9
 ; rlimit-rttime = 1000000
+@endif
 
 ; default-sample-format = s16le
 ; default-sample-rate = 44100
