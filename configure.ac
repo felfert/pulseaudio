@@ -626,9 +626,10 @@ AC_SUBST(LIBSPEEX_LIBS)
 AC_MSG_CHECKING([whether we need libatomic_ops])
 if test "x$need_libatomic_ops" = "xyes"; then
    AC_MSG_RESULT([yes])
-   AC_CHECK_HEADERS([atomic_ops.h], [], [
-   AC_MSG_ERROR([*** libatomic-ops headers not found])
-   ])
+   AC_CHECK_HEADERS([atomic_ops.h],
+        [CFLAGS="$CFLAGS -DAO_REQUIRE_CAS"],
+        [AC_MSG_ERROR([*** libatomic-ops headers not found])]
+   )
 
    # Win32 does not need the lib and breaks horribly if we try to include it
    if test "x$os_is_win32" != "x1" ; then
@@ -1144,11 +1145,11 @@ fi
 
 #### PulseAudio system runtime dir ####
 PA_SYSTEM_RUNTIME_PATH="${localstatedir}/run/pulse"
-AC_SUBST(PA_SYSTEM_RUNTIME_PATH)
+AX_DEFINE_DIR(PA_SYSTEM_RUNTIME_PATH, PA_SYSTEM_RUNTIME_PATH, [System runtime dir])
 PA_SYSTEM_CONFIG_PATH="${localstatedir}/lib/pulse"
-AC_SUBST(PA_SYSTEM_CONFIG_PATH)
+AX_DEFINE_DIR(PA_SYSTEM_CONFIG_PATH, PA_SYSTEM_CONFIG_PATH, [System config dir])
 PA_SYSTEM_STATE_PATH="${localstatedir}/lib/pulse"
-AC_SUBST(PA_SYSTEM_STATE_PATH)
+AX_DEFINE_DIR(PA_SYSTEM_STATE_PATH, PA_SYSTEM_STATE_PATH, [System state dir])
 
 ###################################
 #            Output               #
@@ -1191,6 +1192,7 @@ AC_ARG_WITH(
         [modlibexecdir=$withval], [modlibexecdir="${libdir}/pulse-${PA_MAJORMINOR}/modules"])
 
 AC_SUBST(modlibexecdir)
+AX_DEFINE_DIR(PA_DLSEARCHPATH, modlibexecdir, [Modules dir])
 
 AC_ARG_WITH(
         [udev-rules-dir],
@@ -1264,6 +1266,7 @@ echo "
     prefix:                        ${prefix}
     sysconfdir:                    ${sysconfdir}
     localstatedir:                 ${localstatedir}
+    modlibexecdir:                 ${modlibexecdir}
     System Runtime Path:           ${PA_SYSTEM_RUNTIME_PATH}
     System State Path:             ${PA_SYSTEM_STATE_PATH}
     System Config Path:            ${PA_SYSTEM_CONFIG_PATH}
