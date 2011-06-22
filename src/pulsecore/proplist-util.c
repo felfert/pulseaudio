@@ -209,10 +209,14 @@ void pa_init_proplist(pa_proplist *p) {
     }
 
     if (!pa_proplist_contains(p, PA_PROP_APPLICATION_LANGUAGE)) {
+#ifdef ENABLE_NLS
         const char *l;
 
         if ((l = setlocale(LC_MESSAGES, NULL)))
             pa_proplist_sets(p, PA_PROP_APPLICATION_LANGUAGE, l);
+#else
+        pa_proplist_sets(p, PA_PROP_APPLICATION_LANGUAGE, "C");
+#endif
     }
 
     if (!pa_proplist_contains(p, PA_PROP_WINDOW_X11_DISPLAY)) {
