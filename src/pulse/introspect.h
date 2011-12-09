@@ -164,9 +164,8 @@
  *
  * If an application desires to modify the volume of just a single stream
  * (commonly one of its own streams), this can be done by setting the volume
- * of its associated sink input, using pa_context_set_sink_input_volume().
- *
- * There is no support for modifying the volume of source outputs.
+ * of its associated sink input or source output, using
+ * pa_context_set_sink_input_volume() or pa_context_set_source_output_volume()
  *
  * It is also possible to remove sink inputs and source outputs, terminating
  * the streams associated with them:
@@ -203,6 +202,7 @@ typedef struct pa_sink_port_info {
     const char *name;                   /**< Name of this port */
     const char *description;            /**< Description of this port */
     uint32_t priority;                  /**< The higher this value is the more useful this port is as a default */
+    int available;                      /**< A \link pa_port_available_t, indicating availability status of this port. \since 2.0 */
 } pa_sink_port_info;
 
 /** Stores information about sinks. Please note that this structure
@@ -282,6 +282,7 @@ typedef struct pa_source_port_info {
     const char *name;                   /**< Name of this port */
     const char *description;            /**< Description of this port */
     uint32_t priority;                  /**< The higher this value is the more useful this port is as a default */
+    int available;                      /**< A \link pa_port_available_t, indicating availability status of this port. \since 2.0 */
 } pa_source_port_info;
 
 /** Stores information about sources. Please note that this structure
@@ -310,6 +311,8 @@ typedef struct pa_source_info {
     uint32_t n_ports;                   /**< Number of entries in port array \since 0.9.16 */
     pa_source_port_info** ports;        /**< Array of available ports, or NULL. Array is terminated by an entry set to NULL. The number of entries is stored in n_ports \since 0.9.16  */
     pa_source_port_info* active_port;   /**< Pointer to active port in the array, or NULL \since 0.9.16  */
+    uint8_t n_formats;                  /**< Number of formats supported by the source. \since 1.0 */
+    pa_format_info **formats;           /**< Array of formats supported by the source. \since 1.0 */
 } pa_source_info;
 
 /** Callback prototype for pa_context_get_source_info_by_name() and friends */
@@ -362,7 +365,7 @@ typedef struct pa_server_info {
     const char *server_name;            /**< Server package name (usually "pulseaudio") */
     pa_sample_spec sample_spec;         /**< Default sample specification */
     const char *default_sink_name;      /**< Name of default sink. */
-    const char *default_source_name;    /**< Name of default sink. */
+    const char *default_source_name;    /**< Name of default source. */
     uint32_t cookie;                    /**< A random cookie for identifying this instance of PulseAudio. */
     pa_channel_map channel_map;         /**< Default channel map. \since 0.9.15 */
 } pa_server_info;
@@ -543,10 +546,10 @@ pa_operation* pa_context_kill_sink_input(pa_context *c, uint32_t idx, pa_context
  * can be extended as part of evolutionary API updates at any time in
  * any new release. */
 typedef struct pa_source_output_info {
-    uint32_t index;                      /**< Index of the sink input */
-    const char *name;                    /**< Name of the sink input */
-    uint32_t owner_module;               /**< Index of the module this sink input belongs to, or PA_INVALID_INDEX when it does not belong to any module */
-    uint32_t client;                     /**< Index of the client this sink input belongs to, or PA_INVALID_INDEX when it does not belong to any client */
+    uint32_t index;                      /**< Index of the source output */
+    const char *name;                    /**< Name of the source output */
+    uint32_t owner_module;               /**< Index of the module this source output belongs to, or PA_INVALID_INDEX when it does not belong to any module */
+    uint32_t client;                     /**< Index of the client this source output belongs to, or PA_INVALID_INDEX when it does not belong to any client */
     uint32_t source;                     /**< Index of the connected source */
     pa_sample_spec sample_spec;          /**< The sample specification of the source output */
     pa_channel_map channel_map;          /**< Channel map */
@@ -556,6 +559,11 @@ typedef struct pa_source_output_info {
     const char *driver;                  /**< Driver name */
     pa_proplist *proplist;               /**< Property list \since 0.9.11 */
     int corked;                          /**< Stream corked \since 1.0 */
+    pa_cvolume volume;                   /**< The volume of this source output \since 1.0 */
+    int mute;                            /**< Stream muted \since 1.0 */
+    int has_volume;                      /**< Stream has volume. If not set, then the meaning of this struct's volume member is unspecified. \since 1.0 */
+    int volume_writable;                 /**< The volume can be set. If not set, the volume can still change even though clients can't control the volume. \since 1.0 */
+    pa_format_info *format;              /**< Stream format information. \since 1.0 */
 } pa_source_output_info;
 
 /** Callback prototype for pa_context_get_source_output_info() and friends*/
@@ -572,6 +580,12 @@ pa_operation* pa_context_move_source_output_by_name(pa_context *c, uint32_t idx,
 
 /** Move the specified source output to a different source. \since 0.9.5 */
 pa_operation* pa_context_move_source_output_by_index(pa_context *c, uint32_t idx, uint32_t source_idx, pa_context_success_cb_t cb, void* userdata);
+
+/** Set the volume of a source output stream \since 1.0 */
+pa_operation* pa_context_set_source_output_volume(pa_context *c, uint32_t idx, const pa_cvolume *volume, pa_context_success_cb_t cb, void *userdata);
+
+/** Set the mute switch of a source output stream \since 1.0 */
+pa_operation* pa_context_set_source_output_mute(pa_context *c, uint32_t idx, int mute, pa_context_success_cb_t cb, void *userdata);
 
 /** Kill a source output. */
 pa_operation* pa_context_kill_source_output(pa_context *c, uint32_t idx, pa_context_success_cb_t cb, void *userdata);

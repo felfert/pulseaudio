@@ -30,7 +30,6 @@
 
 #include <pulsecore/atomic.h>
 #include <pulsecore/log.h>
-#include <pulsecore/thread.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/macro.h>
@@ -54,7 +53,7 @@ struct pa_flist {
     pa_atomic_ptr_t stored;
     /* Stack that contains empty list elements */
     pa_atomic_ptr_t empty;
-    pa_flist_elem table[0];
+    pa_flist_elem table[];
 };
 
 /* Lock free pop from linked list stack */
@@ -114,6 +113,7 @@ void pa_flist_free(pa_flist *l, pa_free_cb_t free_cb) {
             free_cb(pa_atomic_ptr_load(&elem->ptr));
     }
 
+    pa_xfree((char *) l->name);
     pa_xfree(l);
 }
 

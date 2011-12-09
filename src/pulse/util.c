@@ -58,8 +58,6 @@
 #include <pulse/timeval.h>
 
 #include <pulsecore/socket.h>
-#include <pulsecore/core-error.h>
-#include <pulsecore/log.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/usergroup.h>
@@ -133,9 +131,9 @@ char *pa_get_host_name(char *s, size_t l) {
 }
 
 char *pa_get_home_dir(char *s, size_t l) {
-    char *e, *dir;
-
+    char *e;
 #ifdef HAVE_PWD_H
+    char *dir;
     struct passwd *r;
 #endif
 

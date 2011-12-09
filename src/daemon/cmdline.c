@@ -23,17 +23,15 @@
 #include <config.h>
 #endif
 
-#include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <getopt.h>
-#include <sys/stat.h>
 
 #include <pulse/xmalloc.h>
-#include <pulse/i18n.h>
 #include <pulse/util.h>
 
 #include <pulsecore/core-util.h>
+#include <pulsecore/i18n.h>
 #include <pulsecore/strbuf.h>
 #include <pulsecore/macro.h>
 
@@ -73,7 +71,7 @@ enum {
     ARG_START
 };
 
-/* Tabel for getopt_long() */
+/* Table for getopt_long() */
 static const struct option long_options[] = {
     {"help",                        0, 0, ARG_HELP},
     {"version",                     0, 0, ARG_VERSION},

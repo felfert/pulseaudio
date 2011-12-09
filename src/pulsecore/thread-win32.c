@@ -28,7 +28,6 @@
 #include <windows.h>
 
 #include <pulse/xmalloc.h>
-#include <pulsecore/log.h>
 #include <pulsecore/once.h>
 
 #include "thread.h"
@@ -122,6 +121,27 @@ int pa_thread_join(pa_thread *t) {
 pa_thread* pa_thread_self(void) {
     pa_run_once(&thread_tls_once, thread_tls_once_func);
     return pa_tls_get(thread_tls);
+}
+
+void* pa_thread_get_data(pa_thread *t) {
+    pa_assert(t);
+
+    return t->userdata;
+}
+
+void pa_thread_set_data(pa_thread *t, void *userdata) {
+    pa_assert(t);
+
+    t->userdata = userdata;
+}
+
+void pa_thread_set_name(pa_thread *t, const char *name) {
+    /* Not implemented */
+}
+
+const char *pa_thread_get_name(pa_thread *t) {
+    /* Not implemented */
+    return NULL;
 }
 
 void pa_thread_yield(void) {

@@ -28,9 +28,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#ifdef HAVE_SYS_UN_H
-#include <sys/un.h>
-#endif
 #ifdef HAVE_NETINET_IN_H
 #include <netinet/in.h>
 #endif
@@ -40,7 +37,6 @@
 #include <pulsecore/socket.h>
 #include <pulsecore/queue.h>
 #include <pulsecore/log.h>
-#include <pulsecore/core-scache.h>
 #include <pulsecore/creds.h>
 #include <pulsecore/refcnt.h>
 #include <pulsecore/flist.h>
@@ -77,7 +73,11 @@ enum {
 typedef uint32_t pa_pstream_descriptor[PA_PSTREAM_DESCRIPTOR_MAX];
 
 #define PA_PSTREAM_DESCRIPTOR_SIZE (PA_PSTREAM_DESCRIPTOR_MAX*sizeof(uint32_t))
-#define FRAME_SIZE_MAX_ALLOW PA_SCACHE_ENTRY_SIZE_MAX /* allow uploading a single sample in one frame at max */
+
+/* To allow uploading a single sample in one frame, this value should be the
+ * same size (16 MB) as PA_SCACHE_ENTRY_SIZE_MAX from pulsecore/core-scache.h.
+ */
+#define FRAME_SIZE_MAX_ALLOW (1024*1024*16)
 
 PA_STATIC_FLIST_DECLARE(items, 0, pa_xfree);
 
@@ -279,7 +279,7 @@ pa_pstream *pa_pstream_new(pa_mainloop_api *m, pa_iochannel *io, pa_mempool *poo
     return p;
 }
 
-static void item_free(void *item, void *q) {
+static void item_free(void *item) {
     struct item_info *i = item;
     pa_assert(i);
 
@@ -300,10 +300,10 @@ static void pstream_free(pa_pstream *p) {
 
     pa_pstream_unlink(p);
 
-    pa_queue_free(p->send_queue, item_free, NULL);
+    pa_queue_free(p->send_queue, item_free);
 
     if (p->write.current)
-        item_free(p->write.current, NULL);
+        item_free(p->write.current);
 
     if (p->write.memchunk.memblock)
         pa_memblock_unref(p->write.memchunk.memblock);
@@ -607,7 +607,7 @@ static int do_write(pa_pstream *p) {
 
     if (p->write.index >= PA_PSTREAM_DESCRIPTOR_SIZE + ntohl(p->write.descriptor[PA_PSTREAM_DESCRIPTOR_LENGTH])) {
         pa_assert(p->write.current);
-        item_free(p->write.current, NULL);
+        item_free(p->write.current);
         p->write.current = NULL;
 
         if (p->write.memchunk.memblock)

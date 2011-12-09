@@ -30,15 +30,15 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <limits.h>
 #include <getopt.h>
 #include <locale.h>
 
 #include <sndfile.h>
 
-#include <pulse/i18n.h>
 #include <pulse/pulseaudio.h>
+#include <pulse/ext-device-restore.h>
 
+#include <pulsecore/i18n.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/log.h>
@@ -56,11 +56,13 @@ static char
     *module_args = NULL,
     *card_name = NULL,
     *profile_name = NULL,
-    *port_name = NULL;
+    *port_name = NULL,
+    *formats = NULL;
 
 static uint32_t
     sink_input_idx = PA_INVALID_INDEX,
-    source_output_idx = PA_INVALID_INDEX;
+    source_output_idx = PA_INVALID_INDEX,
+    sink_idx = PA_INVALID_INDEX;
 
 static pa_bool_t short_list_format = FALSE;
 static uint32_t module_index;
@@ -108,9 +110,12 @@ static enum {
     SET_SINK_VOLUME,
     SET_SOURCE_VOLUME,
     SET_SINK_INPUT_VOLUME,
+    SET_SOURCE_OUTPUT_VOLUME,
     SET_SINK_MUTE,
     SET_SOURCE_MUTE,
     SET_SINK_INPUT_MUTE,
+    SET_SOURCE_OUTPUT_MUTE,
+    SET_SINK_FORMATS,
     SUBSCRIBE
 } action = NONE;
 
@@ -267,7 +272,7 @@ static void get_sink_info_callback(pa_context *c, const pa_sink_info *i, int is_
              "\tBase Volume: %s%s%s\n"
              "\tMonitor Source: %s\n"
              "\tLatency: %0.0f usec, configured %0.0f usec\n"
-             "\tFlags: %s%s%s%s%s%s\n"
+             "\tFlags: %s%s%s%s%s%s%s\n"
              "\tProperties:\n\t\t%s\n"),
            i->index,
            state_table[1+i->state],
@@ -293,6 +298,7 @@ static void get_sink_info_callback(pa_context *c, const pa_sink_info *i, int is_
            i->flags & PA_SINK_HW_VOLUME_CTRL ? "HW_VOLUME_CTRL " : "",
            i->flags & PA_SINK_DECIBEL_VOLUME ? "DECIBEL_VOLUME " : "",
            i->flags & PA_SINK_LATENCY ? "LATENCY " : "",
+           i->flags & PA_SINK_SET_FORMATS ? "SET_FORMATS " : "",
            pl = pa_proplist_to_string_sep(i->proplist, "\n\t\t"));
 
     pa_xfree(pl);
@@ -333,7 +339,8 @@ static void get_source_info_callback(pa_context *c, const pa_source_info *i, int
         cvdb[PA_SW_CVOLUME_SNPRINT_DB_MAX],
         v[PA_VOLUME_SNPRINT_MAX],
         vdb[PA_SW_VOLUME_SNPRINT_DB_MAX],
-        cm[PA_CHANNEL_MAP_SNPRINT_MAX];
+        cm[PA_CHANNEL_MAP_SNPRINT_MAX],
+        f[PA_FORMAT_INFO_SNPRINT_MAX];
     char *pl;
 
     if (is_last < 0) {
@@ -418,6 +425,14 @@ static void get_source_info_callback(pa_context *c, const pa_source_info *i, int
     if (i->active_port)
         printf(_("\tActive Port: %s\n"),
                i->active_port->name);
+
+    if (i->formats) {
+        uint8_t j;
+
+        printf(_("\tFormats:\n"));
+        for (j = 0; j < i->n_formats; j++)
+            printf("\t\t%s\n", pa_format_info_snprint(f, sizeof(f), i->formats[j]));
+    }
 }
 
 static void get_module_info_callback(pa_context *c, const pa_module_info *i, int is_last, void *userdata) {
@@ -630,7 +645,7 @@ static void get_sink_input_info_callback(pa_context *c, const pa_sink_input_info
 }
 
 static void get_source_output_info_callback(pa_context *c, const pa_source_output_info *i, int is_last, void *userdata) {
-    char t[32], k[32], s[PA_SAMPLE_SPEC_SNPRINT_MAX], cm[PA_CHANNEL_MAP_SNPRINT_MAX];
+    char t[32], k[32], s[PA_SAMPLE_SPEC_SNPRINT_MAX], cv[PA_CVOLUME_SNPRINT_MAX], cvdb[PA_SW_CVOLUME_SNPRINT_DB_MAX], cm[PA_CHANNEL_MAP_SNPRINT_MAX], f[PA_FORMAT_INFO_SNPRINT_MAX];
     char *pl;
 
     if (is_last < 0) {
@@ -671,6 +686,11 @@ static void get_source_output_info_callback(pa_context *c, const pa_source_outpu
              "\tSource: %u\n"
              "\tSample Specification: %s\n"
              "\tChannel Map: %s\n"
+             "\tFormat: %s\n"
+             "\tMute: %s\n"
+             "\tVolume: %s\n"
+             "\t        %s\n"
+             "\t        balance %0.2f\n"
              "\tBuffer Latency: %0.0f usec\n"
              "\tSource Latency: %0.0f usec\n"
              "\tResample method: %s\n"
@@ -682,6 +702,11 @@ static void get_source_output_info_callback(pa_context *c, const pa_source_outpu
            i->source,
            pa_sample_spec_snprint(s, sizeof(s), &i->sample_spec),
            pa_channel_map_snprint(cm, sizeof(cm), &i->channel_map),
+           pa_format_info_snprint(f, sizeof(f), i->format),
+           pa_yes_no(i->mute),
+           pa_cvolume_snprint(cv, sizeof(cv), &i->volume),
+           pa_sw_cvolume_snprint_dB(cvdb, sizeof(cvdb), &i->volume),
+           pa_cvolume_get_balance(&i->volume, &i->channel_map),
            (double) i->buffer_usec,
            (double) i->source_usec,
            i->resample_method ? i->resample_method : _("n/a"),
@@ -844,6 +869,63 @@ static void get_sink_input_volume_callback(pa_context *c, const pa_sink_input_in
     pa_operation_unref(pa_context_set_sink_input_volume(c, sink_input_idx, &cv, simple_callback, NULL));
 }
 
+static void get_source_output_volume_callback(pa_context *c, const pa_source_output_info *o, int is_last, void *userdata) {
+    pa_cvolume cv;
+
+    if (is_last < 0) {
+        pa_log(_("Failed to get source output information: %s"), pa_strerror(pa_context_errno(c)));
+        quit(1);
+        return;
+    }
+
+    if (is_last)
+        return;
+
+    pa_assert(o);
+
+    cv = o->volume;
+    volume_relative_adjust(&cv);
+    pa_operation_unref(pa_context_set_source_output_volume(c, source_output_idx, &cv, simple_callback, NULL));
+}
+
+/* PA_MAX_FORMATS is defined in internal.h so we just define a sane value here */
+#define MAX_FORMATS 256
+
+static void set_sink_formats(pa_context *c, uint32_t sink, const char *str) {
+    pa_format_info *f_arr[MAX_FORMATS];
+    char *format = NULL;
+    const char *state = NULL;
+    int i = 0;
+
+    while ((format = pa_split(str, ";", &state))) {
+        pa_format_info *f = pa_format_info_from_string(pa_strip(format));
+
+        if (!f) {
+            pa_log(_("Failed to set format: invalid format string %s"), format);
+            goto error;
+        }
+
+        f_arr[i++] = f;
+        pa_xfree(format);
+    }
+
+    pa_operation_unref(pa_ext_device_restore_save_formats(c, PA_DEVICE_TYPE_SINK, sink, i, f_arr, simple_callback, NULL));
+
+done:
+    if (format)
+        pa_xfree(format);
+    while(i--)
+        pa_format_info_free(f_arr[i]);
+
+    return;
+
+error:
+    while(i--)
+        pa_format_info_free(f_arr[i]);
+    quit(1);
+    goto done;
+}
+
 static void stream_state_callback(pa_stream *s, void *userdata) {
     pa_assert(s);
 
@@ -963,7 +1045,9 @@ static void context_state_callback(pa_context *c, void *userdata) {
             switch (action) {
                 case STAT:
                     pa_operation_unref(pa_context_stat(c, stat_callback, NULL));
-                    break;
+                    if (short_list_format)
+                        break;
+                    actions++;
 
                 case INFO:
                     pa_operation_unref(pa_context_get_server_info(c, get_server_info_callback, NULL));
@@ -1077,6 +1161,10 @@ static void context_state_callback(pa_context *c, void *userdata) {
                     pa_operation_unref(pa_context_set_sink_input_mute(c, sink_input_idx, mute, simple_callback, NULL));
                     break;
 
+                case SET_SOURCE_OUTPUT_MUTE:
+                    pa_operation_unref(pa_context_set_source_output_mute(c, source_output_idx, mute, simple_callback, NULL));
+                    break;
+
                 case SET_SINK_VOLUME:
                     if ((volume_flags & VOL_RELATIVE) == VOL_RELATIVE) {
                         pa_operation_unref(pa_context_get_sink_info_by_name(c, sink_name, get_sink_volume_callback, NULL));
@@ -1105,6 +1193,20 @@ static void context_state_callback(pa_context *c, void *userdata) {
                         pa_cvolume_set(&v, 1, volume);
                         pa_operation_unref(pa_context_set_sink_input_volume(c, sink_input_idx, &v, simple_callback, NULL));
                     }
+                    break;
+
+                case SET_SOURCE_OUTPUT_VOLUME:
+                    if ((volume_flags & VOL_RELATIVE) == VOL_RELATIVE) {
+                        pa_operation_unref(pa_context_get_source_output_info(c, source_output_idx, get_source_output_volume_callback, NULL));
+                    } else {
+                        pa_cvolume v;
+                        pa_cvolume_set(&v, 1, volume);
+                        pa_operation_unref(pa_context_set_source_output_volume(c, source_output_idx, &v, simple_callback, NULL));
+                    }
+                    break;
+
+                case SET_SINK_FORMATS:
+                    set_sink_formats(c, sink_idx, formats);
                     break;
 
                 case SUBSCRIBE:
@@ -1203,38 +1305,31 @@ static int parse_volume(const char *vol_spec, pa_volume_t *vol, enum volume_flag
 
 static void help(const char *argv0) {
 
-    printf(_("%s [options] stat\n"
-             "%s [options] info\n"
-             "%s [options] list [short] [TYPE]\n"
-             "%s [options] exit\n"
-             "%s [options] upload-sample FILENAME [NAME]\n"
-             "%s [options] play-sample NAME [SINK]\n"
-             "%s [options] remove-sample NAME\n"
-             "%s [options] move-sink-input SINKINPUT SINK\n"
-             "%s [options] move-source-output SOURCEOUTPUT SOURCE\n"
-             "%s [options] load-module NAME [ARGS ...]\n"
-             "%s [options] unload-module MODULE\n"
-             "%s [options] suspend-sink SINK 1|0\n"
-             "%s [options] suspend-source SOURCE 1|0\n"
-             "%s [options] set-card-profile CARD PROFILE\n"
-             "%s [options] set-sink-port SINK PORT\n"
-             "%s [options] set-source-port SOURCE PORT\n"
-             "%s [options] set-sink-volume SINK VOLUME\n"
-             "%s [options] set-source-volume SOURCE VOLUME\n"
-             "%s [options] set-sink-input-volume SINKINPUT VOLUME\n"
-             "%s [options] set-sink-mute SINK 1|0\n"
-             "%s [options] set-source-mute SOURCE 1|0\n"
-             "%s [options] set-sink-input-mute SINKINPUT 1|0\n"
-             "%s [options] subscribe\n\n"
+    printf("%s %s %s\n",    argv0, _("[options]"), "stat [short]");
+    printf("%s %s %s\n",    argv0, _("[options]"), "info");
+    printf("%s %s %s %s\n", argv0, _("[options]"), "list [short]", _("[TYPE]"));
+    printf("%s %s %s\n",    argv0, _("[options]"), "exit");
+    printf("%s %s %s %s\n", argv0, _("[options]"), "upload-sample", _("FILENAME [NAME]"));
+    printf("%s %s %s %s\n", argv0, _("[options]"), "play-sample ", _("NAME [SINK]"));
+    printf("%s %s %s %s\n", argv0, _("[options]"), "remove-sample ", _("NAME"));
+    printf("%s %s %s %s\n", argv0, _("[options]"), "load-module ", _("NAME [ARGS ...]"));
+    printf("%s %s %s %s\n", argv0, _("[options]"), "unload-module ", _("#N"));
+    printf("%s %s %s %s\n", argv0, _("[options]"), "move-(sink-input|source-output)", _("#N SINK|SOURCE"));
+    printf("%s %s %s %s\n", argv0, _("[options]"), "suspend-(sink|source)", _("NAME|#N 1|0"));
+    printf("%s %s %s %s\n", argv0, _("[options]"), "set-card-profile ", _("CARD PROFILE"));
+    printf("%s %s %s %s\n", argv0, _("[options]"), "set-(sink|source)-port", _("NAME|#N PORT"));
+    printf("%s %s %s %s\n", argv0, _("[options]"), "set-(sink|source)-volume", _("NAME|#N VOLUME"));
+    printf("%s %s %s %s\n", argv0, _("[options]"), "set-(sink-input|source-output)-volume", _("#N VOLUME"));
+    printf("%s %s %s %s\n", argv0, _("[options]"), "set-(sink|source)-mute", _("NAME|#N 1|0"));
+    printf("%s %s %s %s\n", argv0, _("[options]"), "set-(sink-input|source-output)-mute", _("#N 1|0"));
+    printf("%s %s %s %s\n", argv0, _("[options]"), "set-sink-formats", _("#N FORMATS"));
+    printf("%s %s %s\n",    argv0, _("[options]"), "subscribe");
+
+    printf(_("\n"
              "  -h, --help                            Show this help\n"
              "      --version                         Show version\n\n"
              "  -s, --server=SERVER                   The name of the server to connect to\n"
-             "  -n, --client-name=NAME                How to call this client on the server\n"),
-           argv0, argv0, argv0, argv0, argv0,
-           argv0, argv0, argv0, argv0, argv0,
-           argv0, argv0, argv0, argv0, argv0,
-           argv0, argv0, argv0, argv0, argv0,
-           argv0, argv0, argv0);
+             "  -n, --client-name=NAME                How to call this client on the server\n"));
 }
 
 enum {
@@ -1304,10 +1399,13 @@ int main(int argc, char *argv[]) {
     }
 
     if (optind < argc) {
-        if (pa_streq(argv[optind], "stat"))
+        if (pa_streq(argv[optind], "stat")) {
             action = STAT;
+            short_list_format = FALSE;
+            if (optind+1 < argc && pa_streq(argv[optind+1], "short"))
+                short_list_format = TRUE;
 
-        else if (pa_streq(argv[optind], "info"))
+        } else if (pa_streq(argv[optind], "info"))
             action = INFO;
 
         else if (pa_streq(argv[optind], "exit"))
@@ -1542,6 +1640,22 @@ int main(int argc, char *argv[]) {
             if (parse_volume(argv[optind+2], &volume, &volume_flags) < 0)
                 goto quit;
 
+        } else if (pa_streq(argv[optind], "set-source-output-volume")) {
+            action = SET_SOURCE_OUTPUT_VOLUME;
+
+            if (argc != optind+3) {
+                pa_log(_("You have to specify a source output index and a volume"));
+                goto quit;
+            }
+
+            if (pa_atou(argv[optind+1], &source_output_idx) < 0) {
+                pa_log(_("Invalid source output index"));
+                goto quit;
+            }
+
+            if (parse_volume(argv[optind+2], &volume, &volume_flags) < 0)
+                goto quit;
+
         } else if (pa_streq(argv[optind], "set-sink-mute")) {
             int b;
             action = SET_SINK_MUTE;
@@ -1597,11 +1711,44 @@ int main(int argc, char *argv[]) {
 
             mute = b;
 
+        } else if (pa_streq(argv[optind], "set-source-output-mute")) {
+            int b;
+            action = SET_SOURCE_OUTPUT_MUTE;
+
+            if (argc != optind+3) {
+                pa_log(_("You have to specify a source output index and a mute boolean"));
+                goto quit;
+            }
+
+            if (pa_atou(argv[optind+1], &source_output_idx) < 0) {
+                pa_log(_("Invalid source output index specification"));
+                goto quit;
+            }
+
+            if ((b = pa_parse_boolean(argv[optind+2])) < 0) {
+                pa_log(_("Invalid mute specification"));
+                goto quit;
+            }
+
+            mute = b;
+
         } else if (pa_streq(argv[optind], "subscribe"))
 
             action = SUBSCRIBE;
 
-        else if (pa_streq(argv[optind], "help")) {
+        else if (pa_streq(argv[optind], "set-sink-formats")) {
+            int32_t tmp;
+
+            if (argc != optind+3 || pa_atoi(argv[optind+1], &tmp) < 0) {
+                pa_log(_("You have to specify a sink index and a semicolon-separated list of supported formats"));
+                goto quit;
+            }
+
+            sink_idx = tmp;
+            action = SET_SINK_FORMATS;
+            formats = pa_xstrdup(argv[optind+2]);
+
+        } else if (pa_streq(argv[optind], "help")) {
             help(bn);
             ret = 0;
             goto quit;
@@ -1662,6 +1809,7 @@ quit:
     pa_xfree(card_name);
     pa_xfree(profile_name);
     pa_xfree(port_name);
+    pa_xfree(formats);
 
     if (sndfile)
         sf_close(sndfile);

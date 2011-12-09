@@ -27,7 +27,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
-#include <string.h>
 #include <stdlib.h>
 #include <time.h>
 
@@ -50,10 +49,10 @@ static int random_proper(void *ret_data, size_t length) {
 #ifdef OS_IS_WIN32
     int ret = -1;
 
+    HCRYPTPROV hCryptProv = 0;
+
     pa_assert(ret_data);
     pa_assert(length > 0);
-
-    HCRYPTPROV hCryptProv = NULL;
 
     if (CryptAcquireContext(&hCryptProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
         if(CryptGenRandom(hCryptProv, length, ret_data))

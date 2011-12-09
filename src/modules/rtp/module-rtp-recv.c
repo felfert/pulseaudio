@@ -30,6 +30,7 @@
 #include <errno.h>
 #include <string.h>
 #include <unistd.h>
+#include <math.h>
 
 #include <pulse/rtclock.h>
 #include <pulse/timeval.h>
@@ -48,9 +49,8 @@
 #include <pulsecore/namereg.h>
 #include <pulsecore/sample-util.h>
 #include <pulsecore/macro.h>
-#include <pulsecore/atomic.h>
-#include <pulsecore/atomic.h>
 #include <pulsecore/socket-util.h>
+#include <pulsecore/atomic.h>
 #include <pulsecore/once.h>
 #include <pulsecore/poll.h>
 #include <pulsecore/arpa-inet.h>
@@ -556,10 +556,11 @@ static struct session *session_new(struct userdata *u, const pa_sdp_info *sdp_in
         s->intended_latency = s->sink_latency*2;
 
     s->memblockq = pa_memblockq_new(
+            "module-rtp-recv memblockq",
             0,
             MEMBLOCKQ_MAXLENGTH,
             MEMBLOCKQ_MAXLENGTH,
-            pa_frame_size(&s->sink_input->sample_spec),
+            &s->sink_input->sample_spec,
             pa_usec_to_bytes(s->intended_latency - s->sink_latency, &s->sink_input->sample_spec),
             0,
             0,

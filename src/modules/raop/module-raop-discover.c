@@ -37,14 +37,9 @@
 #include <avahi-common/malloc.h>
 
 #include <pulse/xmalloc.h>
-#include <pulse/util.h>
 
-#include <pulsecore/sink.h>
-#include <pulsecore/source.h>
-#include <pulsecore/native-common.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/log.h>
-#include <pulsecore/core-subscribe.h>
 #include <pulsecore/hashmap.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/namereg.h>
@@ -161,7 +156,9 @@ static void resolver_cb(
             ++nicename;
             if (strlen(nicename) > 0) {
                 pa_log_debug("Found RAOP: %s", nicename);
-            }
+                nicename = pa_escape(nicename, "\"'");
+            } else
+                nicename = NULL;
         }
 
         for (l = txt; l; l = l->next) {
@@ -191,24 +188,18 @@ static void resolver_cb(
         }
         pa_xfree(dname);
 
-        /*
-         TODO: allow this syntax of server name in things....
-        args = pa_sprintf_malloc("server=[%s]:%u "
-                                 "sink_name=%s",
-                                 avahi_address_snprint(at, sizeof(at), a), port,
-                                 vname);*/
         if (nicename) {
-            args = pa_sprintf_malloc("server=%s "
+            args = pa_sprintf_malloc("server=[%s]:%u "
                                      "sink_name=%s "
-                                     "description=\"%s\"",
-                                     avahi_address_snprint(at, sizeof(at), a),
+                                     "sink_properties='device.description=\"%s\"'",
+                                     avahi_address_snprint(at, sizeof(at), a), port,
                                      vname,
                                      nicename);
-
+            pa_xfree(nicename);
         } else {
-            args = pa_sprintf_malloc("server=%s "
+            args = pa_sprintf_malloc("server=[%s]:%u "
                                      "sink_name=%s",
-                                     avahi_address_snprint(at, sizeof(at), a),
+                                     avahi_address_snprint(at, sizeof(at), a), port,
                                      vname);
         }
 

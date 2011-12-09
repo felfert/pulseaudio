@@ -25,7 +25,6 @@
 #endif
 
 #include <stdio.h>
-#include <math.h>
 
 #include <pulse/xmalloc.h>
 
@@ -54,10 +53,8 @@ PA_MODULE_USAGE(
         "rate=<sample rate> "
         "channels=<number of channels> "
         "channel_map=<channel map> "
-        "sink_input_name=<custom name for the sink input> "
-        "source_output_name=<custom name for the source output> "
-        "sink_input_role=<media.role for the sink input> "
-        "source_output_role=<media.role for the source output> "
+        "sink_input_properties=<proplist> "
+        "source_output_properties=<proplist> "
         "source_dont_move=<boolean> "
         "sink_dont_move=<boolean> "
         "remix=<remix channels?> ");
@@ -115,10 +112,8 @@ static const char* const valid_modargs[] = {
     "rate",
     "channels",
     "channel_map",
-    "sink_input_name",
-    "source_output_name",
-    "sink_input_role",
-    "source_output_role",
+    "sink_input_properties",
+    "source_output_properties",
     "source_dont_move",
     "sink_dont_move",
     "remix",
@@ -705,18 +700,21 @@ int pa__init(pa_module *m) {
     sink_input_data.module = m;
     pa_sink_input_new_data_set_sink(&sink_input_data, sink, FALSE);
 
-    if ((n = pa_modargs_get_value(ma, "sink_input_name", NULL)))
-        pa_proplist_sets(sink_input_data.proplist, PA_PROP_MEDIA_NAME, n);
-    else
+    if (pa_modargs_get_proplist(ma, "sink_input_properties", sink_input_data.proplist, PA_UPDATE_REPLACE) < 0) {
+        pa_log("Failed to parse the sink_input_properties value.");
+        pa_sink_input_new_data_done(&sink_input_data);
+        goto fail;
+    }
+
+    if (!pa_proplist_contains(sink_input_data.proplist, PA_PROP_MEDIA_NAME))
         pa_proplist_setf(sink_input_data.proplist, PA_PROP_MEDIA_NAME, "Loopback from %s",
                          pa_strnull(pa_proplist_gets(source->proplist, PA_PROP_DEVICE_DESCRIPTION)));
 
-    if ((n = pa_modargs_get_value(ma, "sink_input_role", NULL)))
-        pa_proplist_sets(sink_input_data.proplist, PA_PROP_MEDIA_ROLE, n);
-    else
+    if (!pa_proplist_contains(sink_input_data.proplist, PA_PROP_MEDIA_ROLE))
         pa_proplist_sets(sink_input_data.proplist, PA_PROP_MEDIA_ROLE, "abstract");
 
-    if ((n = pa_proplist_gets(source->proplist, PA_PROP_DEVICE_ICON_NAME)))
+    if (!pa_proplist_contains(sink_input_data.proplist, PA_PROP_MEDIA_ICON_NAME)
+            && (n = pa_proplist_gets(source->proplist, PA_PROP_DEVICE_ICON_NAME)))
         pa_proplist_sets(sink_input_data.proplist, PA_PROP_MEDIA_ICON_NAME, n);
 
     pa_sink_input_new_data_set_sample_spec(&sink_input_data, &ss);
@@ -755,20 +753,23 @@ int pa__init(pa_module *m) {
     pa_source_output_new_data_init(&source_output_data);
     source_output_data.driver = __FILE__;
     source_output_data.module = m;
-    source_output_data.source = source;
+    pa_source_output_new_data_set_source(&source_output_data, source, FALSE);
 
-    if ((n = pa_modargs_get_value(ma, "source_output_name", NULL)))
-        pa_proplist_sets(source_output_data.proplist, PA_PROP_MEDIA_NAME, n);
-    else
+    if (pa_modargs_get_proplist(ma, "source_output_properties", source_output_data.proplist, PA_UPDATE_REPLACE) < 0) {
+        pa_log("Failed to parse the source_output_properties value.");
+        pa_source_output_new_data_done(&source_output_data);
+        goto fail;
+    }
+
+    if (!pa_proplist_contains(source_output_data.proplist, PA_PROP_MEDIA_NAME))
         pa_proplist_setf(source_output_data.proplist, PA_PROP_MEDIA_NAME, "Loopback to %s",
                          pa_strnull(pa_proplist_gets(sink->proplist, PA_PROP_DEVICE_DESCRIPTION)));
 
-    if ((n = pa_modargs_get_value(ma, "source_output_role", NULL)))
-        pa_proplist_sets(source_output_data.proplist, PA_PROP_MEDIA_ROLE, n);
-    else
+    if (!pa_proplist_contains(source_output_data.proplist, PA_PROP_MEDIA_ROLE))
         pa_proplist_sets(source_output_data.proplist, PA_PROP_MEDIA_ROLE, "abstract");
 
-    if ((n = pa_proplist_gets(sink->proplist, PA_PROP_DEVICE_ICON_NAME)))
+    if (!pa_proplist_contains(source_output_data.proplist, PA_PROP_MEDIA_ICON_NAME)
+            && (n = pa_proplist_gets(sink->proplist, PA_PROP_DEVICE_ICON_NAME)))
         pa_proplist_sets(source_output_data.proplist, PA_PROP_MEDIA_ICON_NAME, n);
 
     pa_source_output_new_data_set_sample_spec(&source_output_data, &ss);
@@ -805,10 +806,11 @@ int pa__init(pa_module *m) {
 
     pa_sink_input_get_silence(u->sink_input, &silence);
     u->memblockq = pa_memblockq_new(
+            "module-loopback memblockq",
             0,                      /* idx */
             MEMBLOCKQ_MAXLENGTH,    /* maxlength */
             MEMBLOCKQ_MAXLENGTH,    /* tlength */
-            pa_frame_size(&ss),     /* base */
+            &ss,                    /* sample_spec */
             0,                      /* prebuf */
             0,                      /* minreq */
             0,                      /* maxrewind */

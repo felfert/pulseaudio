@@ -21,26 +21,29 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
 USA.
 -->
 
-<manpage name="pabrowse" section="1" desc="List PulseAudio sound servers on the network">
+<manpage name="start-pulseaudio-x11" section="1" desc="PulseAudio Sound Server X11 Startup Script">
 
   <synopsis>
-    <cmd>pabrowse</cmd>
+    <cmd>start-pulseaudio-x11 [<arg>pulseaudio options</arg>]</cmd>
   </synopsis>
 
   <description>
-    <p><file>pabrowse</file> lists all PulseAudio sound servers on the
-    local network that are being announced with Zeroconf/Avahi.</p>
+    <p>This script starts pulseaudio (if not already running) and loads modules to
+    publish access credentials to the PulseAudio server in the X11 root window and to synthesize
+    X11 media key events on cork/uncork requests. Additionally it registers
+    PulseAudio to the X11 Session Manager.</p>
 
-    <p>This program takes no command line arguments.</p>
+    <p>All arguments are directly passed to pulseaudio.</p>
   </description>
 
   <section name="Authors">
-    <p>The PulseAudio Developers &lt;@PACKAGE_BUGREPORT@&gt;; PulseAudio is available from <url href="@PACKAGE_URL@"/></p>
+    <p>The PulseAudio Developers &lt;@PACKAGE_BUGREPORT@&gt;;
+    PulseAudio is available from <url href="@PACKAGE_URL@"/></p>
   </section>
 
   <section name="See also">
     <p>
-      <manref name="pulseaudio" section="1"/>, <manref name="avahi-daemon" section="8"/>
+      <manref name="pulseaudio" section="1"/>
     </p>
   </section>
 

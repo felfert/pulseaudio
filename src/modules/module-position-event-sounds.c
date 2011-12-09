@@ -24,18 +24,15 @@
 #endif
 
 #include <unistd.h>
-#include <string.h>
 #include <errno.h>
 #include <sys/types.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <ctype.h>
 
 #include <pulse/xmalloc.h>
 #include <pulse/volume.h>
 #include <pulse/channelmap.h>
 
-#include <pulsecore/core-error.h>
 #include <pulsecore/module.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/modargs.h>
@@ -90,7 +87,7 @@ static pa_hook_result_t sink_input_fixate_hook_callback(pa_core *core, pa_sink_i
     if ((id = pa_proplist_gets(data->proplist, PA_PROP_EVENT_ID))) {
 
         /* The test sounds should never be positioned in space, since
-         * they might be trigered themselves to configure the speakers
+         * they might be triggered themselves to configure the speakers
          * in space, which we don't want to mess up. */
 
         if (pa_startswith(id, "audio-channel-"))

@@ -33,7 +33,6 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <limits.h>
 #include <getopt.h>
 #include <locale.h>
 
@@ -41,8 +40,9 @@
 #include <sys/prctl.h>
 #endif
 
-#include <pulse/i18n.h>
 #include <pulse/pulseaudio.h>
+
+#include <pulsecore/i18n.h>
 #include <pulsecore/macro.h>
 
 static pa_context *context = NULL;

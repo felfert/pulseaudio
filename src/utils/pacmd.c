@@ -32,11 +32,10 @@
 #include <sys/un.h>
 #include <locale.h>
 
-#include <pulse/error.h>
 #include <pulse/util.h>
 #include <pulse/xmalloc.h>
-#include <pulse/i18n.h>
 
+#include <pulsecore/i18n.h>
 #include <pulsecore/poll.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/core-util.h>

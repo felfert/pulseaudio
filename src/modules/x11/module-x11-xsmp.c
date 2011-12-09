@@ -33,13 +33,8 @@
 #include <pulse/xmalloc.h>
 #include <pulse/util.h>
 
-#include <pulsecore/iochannel.h>
-#include <pulsecore/sink.h>
-#include <pulsecore/core-scache.h>
 #include <pulsecore/modargs.h>
-#include <pulsecore/namereg.h>
 #include <pulsecore/log.h>
-#include <pulsecore/core-util.h>
 #include <pulsecore/x11wrap.h>
 
 #include "module-x11-xsmp-symdef.h"
@@ -101,7 +96,7 @@ static void ice_io_cb(pa_mainloop_api*a, pa_io_event *e, int fd, pa_io_event_fla
 }
 
 static void new_ice_connection(IceConn connection, IcePointer client_data, Bool opening, IcePointer *watch_data) {
-    struct pa_core *c = client_data;
+    pa_core *c = client_data;
 
     if (opening)
         *watch_data = c->mainloop->io_new(

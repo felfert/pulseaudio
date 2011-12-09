@@ -37,15 +37,14 @@
 
 #include <sndfile.h>
 
-#include <pulse/i18n.h>
 #include <pulse/pulseaudio.h>
 #include <pulse/rtclock.h>
 
-#include <pulsecore/macro.h>
 #include <pulsecore/core-util.h>
+#include <pulsecore/i18n.h>
 #include <pulsecore/log.h>
+#include <pulsecore/macro.h>
 #include <pulsecore/sndfile-util.h>
-#include <pulsecore/core-util.h>
 
 #define TIME_EVENT_USEC 50000
 
@@ -91,6 +90,8 @@ static int32_t latency_msec = 0, process_time_msec = 0;
 
 static pa_bool_t raw = TRUE;
 static int file_format = -1;
+
+static uint32_t cork_requests = 0;
 
 /* A shortcut for terminating the application */
 static void quit(int ret) {
@@ -409,6 +410,24 @@ static void stream_event_callback(pa_stream *s, const char *name, pa_proplist *p
 
     t = pa_proplist_to_string_sep(pl, ", ");
     pa_log("Got event '%s', properties '%s'", name, t);
+
+    if (pa_streq(name, PA_STREAM_EVENT_REQUEST_CORK)) {
+        if (cork_requests == 0) {
+            pa_log(_("Cork request stack is empty: corking stream"));
+            pa_operation_unref(pa_stream_cork(s, 1, NULL, NULL));
+        }
+        cork_requests++;
+    } else if (pa_streq(name, PA_STREAM_EVENT_REQUEST_UNCORK)) {
+        if (cork_requests == 1) {
+            pa_log(_("Cork request stack is empty: uncorking stream"));
+            pa_operation_unref(pa_stream_cork(s, 0, NULL, NULL));
+        }
+        if (cork_requests == 0)
+            pa_log(_("Warning: Received more uncork requests than cork requests!"));
+        else
+            cork_requests--;
+    }
+
     pa_xfree(t);
 }
 
@@ -578,7 +597,7 @@ static void stdout_callback(pa_mainloop_api*a, pa_io_event *e, int fd, pa_io_eve
     }
 }
 
-/* UNIX signal to quit recieved */
+/* UNIX signal to quit received */
 static void exit_signal_callback(pa_mainloop_api*m, pa_signal_event *e, int sig, void *userdata) {
     if (verbose)
         pa_log(_("Got signal, exiting."));
@@ -926,8 +945,6 @@ int main(int argc, char *argv[]) {
                 break;
 
             case ARG_FILE_FORMAT:
-                raw = FALSE;
-
                 if (optarg) {
                     if ((file_format = pa_sndfile_format_from_string(optarg)) < 0) {
                         pa_log(_("Unknown file format %s."), optarg);
@@ -986,13 +1003,19 @@ int main(int argc, char *argv[]) {
                 goto quit;
             }
 
-            /* Transparently upgrade classic .wav to wavex for multichannel audio */
             if (file_format <= 0) {
-                if ((sample_spec.channels == 2 && (!channel_map_set || (channel_map.map[0] == PA_CHANNEL_POSITION_LEFT &&
-                                                                        channel_map.map[1] == PA_CHANNEL_POSITION_RIGHT))) ||
-                    (sample_spec.channels == 1 && (!channel_map_set || (channel_map.map[0] == PA_CHANNEL_POSITION_MONO))))
+                char *extension;
+                if (filename && (extension = strrchr(filename, '.')))
+                    file_format = pa_sndfile_format_from_string(extension+1);
+                if (file_format <= 0)
                     file_format = SF_FORMAT_WAV;
-                else
+                /* Transparently upgrade classic .wav to wavex for multichannel audio */
+                if (file_format == SF_FORMAT_WAV &&
+                    (sample_spec.channels > 2 ||
+                    (channel_map_set &&
+                    !(sample_spec.channels == 1 && channel_map.map[0] == PA_CHANNEL_POSITION_MONO) &&
+                    !(sample_spec.channels == 2 && channel_map.map[0] == PA_CHANNEL_POSITION_LEFT
+                                                && channel_map.map[1] == PA_CHANNEL_POSITION_RIGHT))))
                     file_format = SF_FORMAT_WAVEX;
             }
 
@@ -1080,6 +1103,11 @@ int main(int argc, char *argv[]) {
         if ((t = filename) ||
             (t = pa_proplist_gets(proplist, PA_PROP_APPLICATION_NAME)))
             pa_proplist_sets(proplist, PA_PROP_MEDIA_NAME, t);
+
+        if (!pa_proplist_contains(proplist, PA_PROP_MEDIA_NAME)) {
+            pa_log(_("Failed to set media name."));
+            goto quit;
+        }
     }
 
     /* Set up a new main loop */

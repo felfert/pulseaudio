@@ -42,12 +42,10 @@
 #include <pulsecore/modargs.h>
 #include <pulsecore/log.h>
 #include <pulsecore/core-subscribe.h>
-#include <pulsecore/sink-input.h>
 #include <pulsecore/pdispatch.h>
 #include <pulsecore/pstream.h>
 #include <pulsecore/pstream-util.h>
 #include <pulsecore/socket-client.h>
-#include <pulsecore/socket-util.h>
 #include <pulsecore/time-smoother.h>
 #include <pulsecore/thread.h>
 #include <pulsecore/thread-mq.h>
@@ -487,7 +485,7 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
         case PA_SINK_MESSAGE_SET_STATE: {
             int r;
 
-            /* First, change the state, because otherwide pa_sink_render() would fail */
+            /* First, change the state, because otherwise pa_sink_render() would fail */
             if ((r = pa_sink_process_msg(o, code, data, offset, chunk)) >= 0) {
 
                 stream_cork_within_thread(u, u->sink->state == PA_SINK_SUSPENDED);
@@ -998,6 +996,41 @@ fail:
     pa_module_unload_request(u->module, TRUE);
 }
 
+static int read_ports(struct userdata *u, pa_tagstruct *t)
+{
+    if (u->version >= 16) {
+        uint32_t n_ports;
+        const char *s;
+
+        if (pa_tagstruct_getu32(t, &n_ports)) {
+            pa_log("Parse failure");
+            return -PA_ERR_PROTOCOL;
+        }
+
+        for (uint32_t j = 0; j < n_ports; j++) {
+            uint32_t priority;
+
+            if (pa_tagstruct_gets(t, &s) < 0 || /* name */
+                pa_tagstruct_gets(t, &s) < 0 || /* description */
+                pa_tagstruct_getu32(t, &priority) < 0) {
+
+                pa_log("Parse failure");
+                return -PA_ERR_PROTOCOL;
+            }
+            if (u->version >= 24 && pa_tagstruct_getu32(t, &priority) < 0) { /* available */
+                pa_log("Parse failure");
+                return -PA_ERR_PROTOCOL;
+            }
+        }
+
+        if (pa_tagstruct_gets(t, &s) < 0) { /* active port */
+            pa_log("Parse failure");
+            return -PA_ERR_PROTOCOL;
+        }
+    }
+    return 0;
+}
+
 #ifdef TUNNEL_SINK
 
 /* Called from main context */
@@ -1068,36 +1101,12 @@ static void sink_info_cb(pa_pdispatch *pd, uint32_t command,  uint32_t tag, pa_t
         }
     }
 
-    if (u->version >= 16) {
-        uint32_t n_ports;
-        const char *s;
-
-        if (pa_tagstruct_getu32(t, &n_ports)) {
-            pa_log("Parse failure");
-            goto fail;
-        }
-
-        for (uint32_t j = 0; j < n_ports; j++) {
-            uint32_t priority;
-
-            if (pa_tagstruct_gets(t, &s) < 0 || /* name */
-                pa_tagstruct_gets(t, &s) < 0 || /* description */
-                pa_tagstruct_getu32(t, &priority) < 0) {
-
-                pa_log("Parse failure");
-                goto fail;
-            }
-        }
-
-        if (pa_tagstruct_gets(t, &s) < 0) { /* active port */
-            pa_log("Parse failure");
-            goto fail;
-        }
-    }
+    if (read_ports(u, t) < 0)
+        goto fail;
 
     if (u->version >= 21) {
         uint8_t n_formats;
-        pa_format_info format;
+        pa_format_info *format;
 
         if (pa_tagstruct_getu8(t, &n_formats) < 0) { /* no. of formats */
             pa_log("Parse failure");
@@ -1105,10 +1114,13 @@ static void sink_info_cb(pa_pdispatch *pd, uint32_t command,  uint32_t tag, pa_t
         }
 
         for (uint8_t j = 0; j < n_formats; j++) {
-            if (pa_tagstruct_get_format_info(t, &format)) { /* format info */
+            format = pa_format_info_new();
+            if (pa_tagstruct_get_format_info(t, format)) { /* format info */
+                pa_format_info_free(format);
                 pa_log("Parse failure");
                 goto fail;
             }
+            pa_format_info_free(format);
         }
     }
 
@@ -1211,13 +1223,14 @@ static void sink_input_info_cb(pa_pdispatch *pd, uint32_t command,  uint32_t tag
     }
 
     if (u->version >= 21) {
-        pa_format_info format;
+        pa_format_info *format = pa_format_info_new();
 
-        if (pa_tagstruct_get_format_info(t, &format) < 0) {
-
+        if (pa_tagstruct_get_format_info(t, format) < 0) {
+            pa_format_info_free(format);
             pa_log("Parse failure");
             goto fail;
         }
+        pa_format_info_free(format);
     }
 
     if (!pa_tagstruct_eof(t)) {
@@ -1316,32 +1329,8 @@ static void source_info_cb(pa_pdispatch *pd, uint32_t command,  uint32_t tag, pa
         }
     }
 
-    if (u->version >= 16) {
-        uint32_t n_ports;
-        const char *s;
-
-        if (pa_tagstruct_getu32(t, &n_ports)) {
-            pa_log("Parse failure");
-            goto fail;
-        }
-
-        for (uint32_t j = 0; j < n_ports; j++) {
-            uint32_t priority;
-
-            if (pa_tagstruct_gets(t, &s) < 0 || /* name */
-                pa_tagstruct_gets(t, &s) < 0 || /* description */
-                pa_tagstruct_getu32(t, &priority) < 0) {
-
-                pa_log("Parse failure");
-                goto fail;
-            }
-        }
-
-        if (pa_tagstruct_gets(t, &s) < 0) { /* active port */
-            pa_log("Parse failure");
-            goto fail;
-        }
-    }
+    if (read_ports(u, t) < 0)
+        goto fail;
 
     if (!pa_tagstruct_eof(t)) {
         pa_log("Packet too long");
@@ -1537,10 +1526,14 @@ static void create_stream_callback(pa_pdispatch *pd, uint32_t command,  uint32_t
     }
 
     if (u->version >= 21) {
-        pa_format_info format;
+        pa_format_info *format = pa_format_info_new();
 
-        if (pa_tagstruct_get_format_info(t, &format) < 0)
+        if (pa_tagstruct_get_format_info(t, format) < 0) {
+            pa_format_info_free(format);
             goto parse_error;
+        }
+
+        pa_format_info_free(format);
     }
 
     if (!pa_tagstruct_eof(t))
@@ -1748,7 +1741,7 @@ static void setup_complete_callback(pa_pdispatch *pd, uint32_t command, uint32_t
 #ifdef TUNNEL_SINK
     if (u->version >= 21) {
         /* We're not using the extended API, so n_formats = 0 and that's that */
-        pa_tagstruct_putu8(t, 0);
+        pa_tagstruct_putu8(reply, 0);
     }
 #endif
 
@@ -2005,7 +1998,7 @@ int pa__init(pa_module*m) {
         goto fail;
     }
 
-    u->sink = pa_sink_new(m->core, &data, PA_SINK_NETWORK|PA_SINK_LATENCY|PA_SINK_HW_VOLUME_CTRL|PA_SINK_HW_MUTE_CTRL);
+    u->sink = pa_sink_new(m->core, &data, PA_SINK_NETWORK|PA_SINK_LATENCY);
     pa_sink_new_data_done(&data);
 
     if (!u->sink) {
@@ -2016,8 +2009,8 @@ int pa__init(pa_module*m) {
     u->sink->parent.process_msg = sink_process_msg;
     u->sink->userdata = u;
     u->sink->set_state = sink_set_state;
-    u->sink->set_volume = sink_set_volume;
-    u->sink->set_mute = sink_set_mute;
+    pa_sink_set_set_volume_callback(u->sink, sink_set_volume);
+    pa_sink_set_set_mute_callback(u->sink, sink_set_mute);
 
     u->sink->refresh_volume = u->sink->refresh_muted = FALSE;
 

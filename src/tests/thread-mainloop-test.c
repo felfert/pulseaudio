@@ -29,7 +29,6 @@
 #include <pulse/timeval.h>
 #include <pulse/util.h>
 #include <pulse/thread-mainloop.h>
-#include <pulse/gccmacro.h>
 
 #include <pulsecore/macro.h>
 #include <pulsecore/core-rtclock.h>
@@ -67,8 +66,6 @@ int main(int argc, char *argv[]) {
 
     fprintf(stderr, "waiting 5s (sleep)\n");
     pa_msleep(5000);
-
-    fprintf(stderr, "shutting down\n");
 
     pa_threaded_mainloop_stop(m);
 

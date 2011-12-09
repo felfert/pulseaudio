@@ -28,7 +28,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <limits.h>
 
 #include <pulse/rtclock.h>
 #include <pulse/sample.h>
@@ -46,7 +45,6 @@
 #include <pulsecore/source.h>
 #include <pulsecore/core-scache.h>
 #include <pulsecore/sample-util.h>
-#include <pulsecore/authkey.h>
 #include <pulsecore/namereg.h>
 #include <pulsecore/log.h>
 #include <pulsecore/core-util.h>
@@ -426,7 +424,8 @@ static int esd_proto_stream_play(connection *c, esd_proto_t request, const void 
     sdata.driver = __FILE__;
     sdata.module = c->options->module;
     sdata.client = c->client;
-    pa_sink_input_new_data_set_sink(&sdata, sink, FALSE);
+    if (sink)
+        pa_sink_input_new_data_set_sink(&sdata, sink, FALSE);
     pa_sink_input_new_data_set_sample_spec(&sdata, &ss);
 
     pa_sink_input_new(&c->sink_input, c->protocol->core, &sdata);
@@ -437,10 +436,11 @@ static int esd_proto_stream_play(connection *c, esd_proto_t request, const void 
     l = (size_t) ((double) pa_bytes_per_second(&ss)*PLAYBACK_BUFFER_SECONDS);
     pa_sink_input_get_silence(c->sink_input, &silence);
     c->input_memblockq = pa_memblockq_new(
+            "esound protocol connection input_memblockq",
             0,
             l,
             l,
-            pa_frame_size(&ss),
+            &ss,
             (size_t) -1,
             l/PLAYBACK_BUFFER_FRAGMENTS,
             0,
@@ -524,7 +524,8 @@ static int esd_proto_stream_record(connection *c, esd_proto_t request, const voi
     sdata.driver = __FILE__;
     sdata.module = c->options->module;
     sdata.client = c->client;
-    sdata.source = source;
+    if (source)
+        pa_source_output_new_data_set_source(&sdata, source, FALSE);
     pa_source_output_new_data_set_sample_spec(&sdata, &ss);
 
     pa_source_output_new(&c->source_output, c->protocol->core, &sdata);
@@ -534,10 +535,11 @@ static int esd_proto_stream_record(connection *c, esd_proto_t request, const voi
 
     l = (size_t) (pa_bytes_per_second(&ss)*RECORD_BUFFER_SECONDS);
     c->output_memblockq = pa_memblockq_new(
+            "esound protocol connection output_memblockq",
             0,
             l,
             l,
-            pa_frame_size(&ss),
+            &ss,
             1,
             0,
             0,
@@ -1019,7 +1021,7 @@ static int do_read(connection *c) {
             c->request = PA_MAYBE_INT32_SWAP(c->swap_byte_order, c->request);
 
             if (c->request < ESD_PROTO_CONNECT || c->request >= ESD_PROTO_MAX) {
-                pa_log("recieved invalid request.");
+                pa_log("received invalid request.");
                 return -1;
             }
 
@@ -1028,7 +1030,7 @@ static int do_read(connection *c) {
 /*             pa_log("executing request #%u", c->request); */
 
             if (!handler->proc) {
-                pa_log("recieved unimplemented request #%u.", c->request);
+                pa_log("received unimplemented request #%u.", c->request);
                 return -1;
             }
 

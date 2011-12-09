@@ -86,14 +86,16 @@ static pa_stream *pa_stream_new_with_proplist_internal(
         const pa_sample_spec *ss,
         const pa_channel_map *map,
         pa_format_info * const *formats,
+        unsigned int n_formats,
         pa_proplist *p) {
 
     pa_stream *s;
-    int i;
+    unsigned int i;
 
     pa_assert(c);
     pa_assert(PA_REFCNT_VALUE(c) >= 1);
-    pa_assert((ss == NULL && map == NULL) || formats == NULL);
+    pa_assert((ss == NULL && map == NULL) || (formats == NULL && n_formats == 0));
+    pa_assert(n_formats < PA_MAX_FORMATS);
 
     PA_CHECK_VALIDITY_RETURN_NULL(c, !pa_detect_fork(), PA_ERR_FORKED);
     PA_CHECK_VALIDITY_RETURN_NULL(c, name || (p && pa_proplist_contains(p, PA_PROP_MEDIA_NAME)), PA_ERR_INVALID);
@@ -119,12 +121,9 @@ static pa_stream *pa_stream_new_with_proplist_internal(
 
     s->n_formats = 0;
     if (formats) {
-        for (i = 0; formats[i] && i < PA_MAX_FORMATS; i++) {
-            s->n_formats++;
+        s->n_formats = n_formats;
+        for (i = 0; i < n_formats; i++)
             s->req_formats[i] = pa_format_info_copy(formats[i]);
-        }
-        /* Make sure the input array was NULL-terminated */
-        pa_assert(formats[i] == NULL);
     }
 
     /* We'll get the final negotiated format after connecting */
@@ -181,6 +180,7 @@ static pa_stream *pa_stream_new_with_proplist_internal(
     s->timing_info_valid = FALSE;
 
     s->previous_time = 0;
+    s->latest_underrun_at_index = -1;
 
     s->read_index_not_before = 0;
     s->write_index_not_before = 0;
@@ -221,18 +221,19 @@ pa_stream *pa_stream_new_with_proplist(
     if (!map)
         PA_CHECK_VALIDITY_RETURN_NULL(c, map = pa_channel_map_init_auto(&tmap, ss->channels, PA_CHANNEL_MAP_DEFAULT), PA_ERR_INVALID);
 
-    return pa_stream_new_with_proplist_internal(c, name, ss, map, NULL, p);
+    return pa_stream_new_with_proplist_internal(c, name, ss, map, NULL, 0, p);
 }
 
 pa_stream *pa_stream_new_extended(
         pa_context *c,
         const char *name,
         pa_format_info * const *formats,
+        unsigned int n_formats,
         pa_proplist *p) {
 
     PA_CHECK_VALIDITY_RETURN_NULL(c, c->version >= 21, PA_ERR_NOTSUPPORTED);
 
-    return pa_stream_new_with_proplist_internal(c, name, NULL, NULL, formats, p);
+    return pa_stream_new_with_proplist_internal(c, name, NULL, NULL, formats, n_formats, p);
 }
 
 static void stream_unlink(pa_stream *s) {
@@ -244,7 +245,7 @@ static void stream_unlink(pa_stream *s) {
 
     /* Detach from context */
 
-    /* Unref all operatio object that point to us */
+    /* Unref all operation object that point to us */
     for (o = s->context->operations; o; o = n) {
         n = o->next;
 
@@ -257,7 +258,7 @@ static void stream_unlink(pa_stream *s) {
         pa_pdispatch_unregister_reply(s->context->pdispatch, s);
 
     if (s->channel_valid) {
-        pa_hashmap_remove((s->direction == PA_STREAM_PLAYBACK) ? s->context->playback_streams : s->context->record_streams, PA_UINT32_TO_PTR(s->channel));
+        pa_hashmap_remove((s->direction == PA_STREAM_RECORD) ? s->context->record_streams : s->context->playback_streams, PA_UINT32_TO_PTR(s->channel));
         s->channel = 0;
         s->channel_valid = FALSE;
     }
@@ -303,7 +304,10 @@ static void stream_free(pa_stream *s) {
         pa_smoother_free(s->smoother);
 
     for (i = 0; i < s->n_formats; i++)
-        pa_xfree(s->req_formats[i]);
+        pa_format_info_free(s->req_formats[i]);
+
+    if (s->format)
+        pa_format_info_free(s->format);
 
     pa_xfree(s->device_name);
     pa_xfree(s);
@@ -787,11 +791,10 @@ void pa_command_stream_event(pa_pdispatch *pd, uint32_t command, uint32_t tag, p
         goto finish;
 
     if (pa_streq(event, PA_STREAM_EVENT_FORMAT_LOST)) {
-        /* Let client know what the running time was when the stream had to be
-         * killed  */
-        pa_usec_t time;
-        if (pa_stream_get_time(s, &time) == 0)
-            pa_proplist_setf(pl, "stream-time", "%llu", (unsigned long long) time);
+        /* Let client know what the running time was when the stream had to be killed  */
+        pa_usec_t stream_time;
+        if (pa_stream_get_time(s, &stream_time) == 0)
+            pa_proplist_setf(pl, "stream-time", "%llu", (unsigned long long) stream_time);
     }
 
     if (s->event_callback)
@@ -841,10 +844,17 @@ finish:
     pa_context_unref(c);
 }
 
+int64_t pa_stream_get_underflow_index(pa_stream *p)
+{
+    pa_assert(p);
+    return p->latest_underrun_at_index;
+}
+
 void pa_command_overflow_or_underflow(pa_pdispatch *pd, uint32_t command, uint32_t tag, pa_tagstruct *t, void *userdata) {
     pa_stream *s;
     pa_context *c = userdata;
     uint32_t channel;
+    int64_t offset = -1;
 
     pa_assert(pd);
     pa_assert(command == PA_COMMAND_OVERFLOW || command == PA_COMMAND_UNDERFLOW);
@@ -854,8 +864,19 @@ void pa_command_overflow_or_underflow(pa_pdispatch *pd, uint32_t command, uint32
 
     pa_context_ref(c);
 
-    if (pa_tagstruct_getu32(t, &channel) < 0 ||
-        !pa_tagstruct_eof(t)) {
+    if (pa_tagstruct_getu32(t, &channel) < 0) {
+        pa_context_fail(c, PA_ERR_PROTOCOL);
+        goto finish;
+    }
+
+    if (c->version >= 23 && command == PA_COMMAND_UNDERFLOW) {
+        if (pa_tagstruct_gets64(t, &offset) < 0) {
+            pa_context_fail(c, PA_ERR_PROTOCOL);
+            goto finish;
+        }
+    }
+
+    if (!pa_tagstruct_eof(t)) {
         pa_context_fail(c, PA_ERR_PROTOCOL);
         goto finish;
     }
@@ -865,6 +886,9 @@ void pa_command_overflow_or_underflow(pa_pdispatch *pd, uint32_t command, uint32
 
     if (s->state != PA_STREAM_READY)
         goto finish;
+
+    if (offset != -1)
+        s->latest_underrun_at_index = offset;
 
     if (s->buffer_attr.prebuf > 0)
         check_smoother_status(s, TRUE, FALSE, TRUE);
@@ -1089,7 +1113,9 @@ void pa_create_stream_callback(pa_pdispatch *pd, uint32_t command, uint32_t tag,
             s->timing_info.configured_sink_usec = usec;
     }
 
-    if (s->context->version >= 21 && s->direction == PA_STREAM_PLAYBACK) {
+    if ((s->context->version >= 21 && s->direction == PA_STREAM_PLAYBACK)
+        || s->context->version >= 22) {
+
         pa_format_info *f = pa_format_info_new();
         pa_tagstruct_get_format_info(t, f);
 
@@ -1114,10 +1140,11 @@ void pa_create_stream_callback(pa_pdispatch *pd, uint32_t command, uint32_t tag,
         pa_assert(!s->record_memblockq);
 
         s->record_memblockq = pa_memblockq_new(
+                "client side record memblockq",
                 0,
                 s->buffer_attr.maxlength,
                 0,
-                pa_frame_size(&s->sample_spec),
+                &s->sample_spec,
                 1,
                 0,
                 0,
@@ -1144,7 +1171,8 @@ static int create_stream(
 
     pa_tagstruct *t;
     uint32_t tag;
-    pa_bool_t volume_set = FALSE;
+    pa_bool_t volume_set = !!volume;
+    pa_cvolume cv;
     uint32_t i;
 
     pa_assert(s);
@@ -1179,14 +1207,14 @@ static int create_stream(
     PA_CHECK_VALIDITY(s->context, s->context->version >= 12 || !(flags & PA_STREAM_VARIABLE_RATE), PA_ERR_NOTSUPPORTED);
     PA_CHECK_VALIDITY(s->context, s->context->version >= 13 || !(flags & PA_STREAM_PEAK_DETECT), PA_ERR_NOTSUPPORTED);
     PA_CHECK_VALIDITY(s->context, s->context->state == PA_CONTEXT_READY, PA_ERR_BADSTATE);
-    /* Althought some of the other flags are not supported on older
+    /* Although some of the other flags are not supported on older
      * version, we don't check for them here, because it doesn't hurt
      * when they are passed but actually not supported. This makes
      * client development easier */
 
     PA_CHECK_VALIDITY(s->context, direction == PA_STREAM_PLAYBACK || !(flags & (PA_STREAM_START_MUTED)), PA_ERR_INVALID);
     PA_CHECK_VALIDITY(s->context, direction == PA_STREAM_RECORD || !(flags & (PA_STREAM_PEAK_DETECT)), PA_ERR_INVALID);
-    PA_CHECK_VALIDITY(s->context, !volume || (pa_sample_spec_valid(&s->sample_spec) && volume->channels == s->sample_spec.channels), PA_ERR_INVALID);
+    PA_CHECK_VALIDITY(s->context, !volume || s->n_formats || (pa_sample_spec_valid(&s->sample_spec) && volume->channels == s->sample_spec.channels), PA_ERR_INVALID);
     PA_CHECK_VALIDITY(s->context, !sync_stream || (direction == PA_STREAM_PLAYBACK && sync_stream->direction == PA_STREAM_PLAYBACK), PA_ERR_INVALID);
     PA_CHECK_VALIDITY(s->context, (flags & (PA_STREAM_ADJUST_LATENCY|PA_STREAM_EARLY_REQUESTS)) != (PA_STREAM_ADJUST_LATENCY|PA_STREAM_EARLY_REQUESTS), PA_ERR_INVALID);
 
@@ -1241,9 +1269,18 @@ static int create_stream(
             PA_TAG_BOOLEAN, s->corked,
             PA_TAG_INVALID);
 
-    if (s->direction == PA_STREAM_PLAYBACK) {
-        pa_cvolume cv;
+    if (!volume) {
+        if (pa_sample_spec_valid(&s->sample_spec))
+            volume = pa_cvolume_reset(&cv, s->sample_spec.channels);
+        else {
+            /* This is not really relevant, since no volume was set, and
+             * the real number of channels is embedded in the format_info
+             * structure */
+            volume = pa_cvolume_reset(&cv, PA_CHANNELS_MAX);
+        }
+    }
 
+    if (s->direction == PA_STREAM_PLAYBACK) {
         pa_tagstruct_put(
                 t,
                 PA_TAG_U32, s->buffer_attr.tlength,
@@ -1251,19 +1288,6 @@ static int create_stream(
                 PA_TAG_U32, s->buffer_attr.minreq,
                 PA_TAG_U32, s->syncid,
                 PA_TAG_INVALID);
-
-        volume_set = !!volume;
-
-        if (!volume) {
-            if (pa_sample_spec_valid(&s->sample_spec))
-                volume = pa_cvolume_reset(&cv, s->sample_spec.channels);
-            else {
-                /* This is not really relevant, since no volume was set, and
-                 * the real number of channels is embedded in the format_info
-                 * structure */
-                volume = pa_cvolume_reset(&cv, PA_CHANNELS_MAX);
-            }
-        }
 
         pa_tagstruct_put_cvolume(t, volume);
     } else
@@ -1316,26 +1340,27 @@ static int create_stream(
         pa_tagstruct_put_boolean(t, flags & PA_STREAM_FAIL_ON_SUSPEND);
     }
 
-    if (s->context->version >= 17) {
+    if (s->context->version >= 17 && s->direction == PA_STREAM_PLAYBACK)
+        pa_tagstruct_put_boolean(t, flags & PA_STREAM_RELATIVE_VOLUME);
 
-        if (s->direction == PA_STREAM_PLAYBACK)
-            pa_tagstruct_put_boolean(t, flags & PA_STREAM_RELATIVE_VOLUME);
+    if (s->context->version >= 18 && s->direction == PA_STREAM_PLAYBACK)
+        pa_tagstruct_put_boolean(t, flags & (PA_STREAM_PASSTHROUGH));
 
+    if ((s->context->version >= 21 && s->direction == PA_STREAM_PLAYBACK)
+        || s->context->version >= 22) {
+
+        pa_tagstruct_putu8(t, s->n_formats);
+        for (i = 0; i < s->n_formats; i++)
+            pa_tagstruct_put_format_info(t, s->req_formats[i]);
     }
 
-    if (s->context->version >= 18) {
-
-        if (s->direction == PA_STREAM_PLAYBACK)
-            pa_tagstruct_put_boolean(t, flags & (PA_STREAM_PASSTHROUGH));
-    }
-
-    if (s->context->version >= 21) {
-
-        if (s->direction == PA_STREAM_PLAYBACK) {
-            pa_tagstruct_putu8(t, s->n_formats);
-            for (i = 0; i < s->n_formats; i++)
-                pa_tagstruct_put_format_info(t, s->req_formats[i]);
-        }
+    if (s->context->version >= 22 && s->direction == PA_STREAM_RECORD) {
+        pa_tagstruct_put_cvolume(t, volume);
+        pa_tagstruct_put_boolean(t, flags & PA_STREAM_START_MUTED);
+        pa_tagstruct_put_boolean(t, volume_set);
+        pa_tagstruct_put_boolean(t, flags & (PA_STREAM_START_MUTED|PA_STREAM_START_UNMUTED));
+        pa_tagstruct_put_boolean(t, flags & PA_STREAM_RELATIVE_VOLUME);
+        pa_tagstruct_put_boolean(t, flags & (PA_STREAM_PASSTHROUGH));
     }
 
     pa_pstream_send_tagstruct(s->context->pstream, t);
@@ -1651,7 +1676,7 @@ pa_operation * pa_stream_drain(pa_stream *s, pa_stream_success_cb_t cb, void *us
     pa_pstream_send_tagstruct(s->context->pstream, t);
     pa_pdispatch_register_reply(s->context->pdispatch, tag, DEFAULT_TIMEOUT, pa_stream_simple_ack_callback, pa_operation_ref(o), (pa_free_cb_t) pa_operation_unref);
 
-    /* This might cause the read index to conitnue again, hence
+    /* This might cause the read index to continue again, hence
      * let's request a timing update */
     request_auto_timing_update(s, TRUE);
 
@@ -1780,7 +1805,7 @@ static void stream_get_timing_info_callback(pa_pdispatch *pd, uint32_t command, 
 
         pa_gettimeofday(&now);
 
-        /* Calculcate timestamps */
+        /* Calculate timestamps */
         if (pa_timeval_cmp(&local, &remote) <= 0 && pa_timeval_cmp(&remote, &now) <= 0) {
             /* local and remote seem to have synchronized clocks */
 
@@ -2636,7 +2661,7 @@ pa_operation* pa_stream_set_buffer_attr(pa_stream *s, const pa_buffer_attr *attr
     pa_pstream_send_tagstruct(s->context->pstream, t);
     pa_pdispatch_register_reply(s->context->pdispatch, tag, DEFAULT_TIMEOUT, stream_set_buffer_attr_callback, pa_operation_ref(o), (pa_free_cb_t) pa_operation_unref);
 
-    /* This might cause changes in the read/write indexex, hence let's
+    /* This might cause changes in the read/write index, hence let's
      * request a timing update */
     request_auto_timing_update(s, TRUE);
 

@@ -24,19 +24,20 @@
 #include <config.h>
 #endif
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
 #include <pulse/introspect.h>
+#include <pulse/format.h>
 #include <pulse/utf8.h>
 #include <pulse/xmalloc.h>
 #include <pulse/timeval.h>
 #include <pulse/util.h>
-#include <pulse/i18n.h>
 #include <pulse/rtclock.h>
 #include <pulse/internal.h>
 
+#include <pulsecore/i18n.h>
 #include <pulsecore/sink-input.h>
 #include <pulsecore/namereg.h>
 #include <pulsecore/core-util.h>
@@ -105,6 +106,13 @@ void pa_sink_new_data_set_channel_map(pa_sink_new_data *data, const pa_channel_m
         data->channel_map = *map;
 }
 
+void pa_sink_new_data_set_alternate_sample_rate(pa_sink_new_data *data, const uint32_t alternate_sample_rate) {
+    pa_assert(data);
+
+    data->alternate_sample_rate_is_set = TRUE;
+    data->alternate_sample_rate = alternate_sample_rate;
+}
+
 void pa_sink_new_data_set_volume(pa_sink_new_data *data, const pa_cvolume *volume) {
     pa_assert(data);
 
@@ -131,40 +139,13 @@ void pa_sink_new_data_done(pa_sink_new_data *data) {
 
     pa_proplist_free(data->proplist);
 
-    if (data->ports) {
-        pa_device_port *p;
-
-        while ((p = pa_hashmap_steal_first(data->ports)))
-            pa_device_port_free(p);
-
-        pa_hashmap_free(data->ports, NULL, NULL);
-    }
+    if (data->ports)
+        pa_device_port_hashmap_free(data->ports);
 
     pa_xfree(data->name);
     pa_xfree(data->active_port);
 }
 
-pa_device_port *pa_device_port_new(const char *name, const char *description, size_t extra) {
-    pa_device_port *p;
-
-    pa_assert(name);
-
-    p = pa_xmalloc(PA_ALIGN(sizeof(pa_device_port)) + extra);
-    p->name = pa_xstrdup(name);
-    p->description = pa_xstrdup(description);
-
-    p->priority = 0;
-
-    return p;
-}
-
-void pa_device_port_free(pa_device_port *p) {
-    pa_assert(p);
-
-    pa_xfree(p->name);
-    pa_xfree(p->description);
-    pa_xfree(p);
-}
 
 /* Called from main context */
 static void reset_callbacks(pa_sink *s) {
@@ -173,12 +154,15 @@ static void reset_callbacks(pa_sink *s) {
     s->set_state = NULL;
     s->get_volume = NULL;
     s->set_volume = NULL;
+    s->write_volume = NULL;
     s->get_mute = NULL;
     s->set_mute = NULL;
     s->request_rewind = NULL;
     s->update_requested_latency = NULL;
     s->set_port = NULL;
     s->get_formats = NULL;
+    s->set_formats = NULL;
+    s->update_rate = NULL;
 }
 
 /* Called from main context */
@@ -274,6 +258,17 @@ pa_sink* pa_sink_new(
 
     s->sample_spec = data->sample_spec;
     s->channel_map = data->channel_map;
+    s->default_sample_rate = s->sample_spec.rate;
+
+    if (data->alternate_sample_rate_is_set)
+        s->alternate_sample_rate = data->alternate_sample_rate;
+    else
+        s->alternate_sample_rate = s->core->alternate_sample_rate;
+
+    if (s->sample_spec.rate == s->alternate_sample_rate) {
+        pa_log_warn("Default and alternate sample rates are the same.");
+        s->alternate_sample_rate = 0;
+    }
 
     s->inputs = pa_idxset_new(NULL, NULL);
     s->n_corked = 0;
@@ -340,8 +335,8 @@ pa_sink* pa_sink_new(
     PA_LLIST_HEAD_INIT(pa_sink_volume_change, s->thread_info.volume_changes);
     s->thread_info.volume_changes_tail = NULL;
     pa_sw_cvolume_multiply(&s->thread_info.current_hw_volume, &s->soft_volume, &s->real_volume);
-    s->thread_info.volume_change_safety_margin = core->sync_volume_safety_margin_usec;
-    s->thread_info.volume_change_extra_delay = core->sync_volume_extra_delay_usec;
+    s->thread_info.volume_change_safety_margin = core->deferred_volume_safety_margin_usec;
+    s->thread_info.volume_change_extra_delay = core->deferred_volume_extra_delay_usec;
 
     /* FIXME: This should probably be moved to pa_sink_put() */
     pa_assert_se(pa_idxset_put(core->sinks, s, &s->index) >= 0);
@@ -361,6 +356,7 @@ pa_sink* pa_sink_new(
     pa_source_new_data_init(&source_data);
     pa_source_new_data_set_sample_spec(&source_data, &s->sample_spec);
     pa_source_new_data_set_channel_map(&source_data, &s->channel_map);
+    pa_source_new_data_set_alternate_sample_rate(&source_data, s->alternate_sample_rate);
     source_data.name = pa_sprintf_malloc("%s.monitor", name);
     source_data.driver = data->driver;
     source_data.module = data->module;
@@ -424,7 +420,7 @@ static int sink_set_state(pa_sink *s, pa_sink_state_t state) {
 
     s->state = state;
 
-    if (state != PA_SINK_UNLINKED) { /* if we enter UNLINKED state pa_sink_unlink() will fire the apropriate events */
+    if (state != PA_SINK_UNLINKED) { /* if we enter UNLINKED state pa_sink_unlink() will fire the appropriate events */
         pa_hook_fire(&s->core->hooks[PA_CORE_HOOK_SINK_STATE_CHANGED], s);
         pa_subscription_post(s->core, PA_SUBSCRIPTION_EVENT_SINK | PA_SUBSCRIPTION_EVENT_CHANGE, s->index);
     }
@@ -449,6 +445,126 @@ static int sink_set_state(pa_sink *s, pa_sink_state_t state) {
     return 0;
 }
 
+void pa_sink_set_get_volume_callback(pa_sink *s, pa_sink_cb_t cb) {
+    pa_assert(s);
+
+    s->get_volume = cb;
+}
+
+void pa_sink_set_set_volume_callback(pa_sink *s, pa_sink_cb_t cb) {
+    pa_sink_flags_t flags;
+
+    pa_assert(s);
+    pa_assert(!s->write_volume || cb);
+
+    s->set_volume = cb;
+
+    /* Save the current flags so we can tell if they've changed */
+    flags = s->flags;
+
+    if (cb) {
+        /* The sink implementor is responsible for setting decibel volume support */
+        s->flags |= PA_SINK_HW_VOLUME_CTRL;
+    } else {
+        s->flags &= ~PA_SINK_HW_VOLUME_CTRL;
+        /* See note below in pa_sink_put() about volume sharing and decibel volumes */
+        pa_sink_enable_decibel_volume(s, !(s->flags & PA_SINK_SHARE_VOLUME_WITH_MASTER));
+    }
+
+    /* If the flags have changed after init, let any clients know via a change event */
+    if (s->state != PA_SINK_INIT && flags != s->flags)
+        pa_subscription_post(s->core, PA_SUBSCRIPTION_EVENT_SINK|PA_SUBSCRIPTION_EVENT_CHANGE, s->index);
+}
+
+void pa_sink_set_write_volume_callback(pa_sink *s, pa_sink_cb_t cb) {
+    pa_sink_flags_t flags;
+
+    pa_assert(s);
+    pa_assert(!cb || s->set_volume);
+
+    s->write_volume = cb;
+
+    /* Save the current flags so we can tell if they've changed */
+    flags = s->flags;
+
+    if (cb)
+        s->flags |= PA_SINK_DEFERRED_VOLUME;
+    else
+        s->flags &= ~PA_SINK_DEFERRED_VOLUME;
+
+    /* If the flags have changed after init, let any clients know via a change event */
+    if (s->state != PA_SINK_INIT && flags != s->flags)
+        pa_subscription_post(s->core, PA_SUBSCRIPTION_EVENT_SINK|PA_SUBSCRIPTION_EVENT_CHANGE, s->index);
+}
+
+void pa_sink_set_get_mute_callback(pa_sink *s, pa_sink_cb_t cb) {
+    pa_assert(s);
+
+    s->get_mute = cb;
+}
+
+void pa_sink_set_set_mute_callback(pa_sink *s, pa_sink_cb_t cb) {
+    pa_sink_flags_t flags;
+
+    pa_assert(s);
+
+    s->set_mute = cb;
+
+    /* Save the current flags so we can tell if they've changed */
+    flags = s->flags;
+
+    if (cb)
+        s->flags |= PA_SINK_HW_MUTE_CTRL;
+    else
+        s->flags &= ~PA_SINK_HW_MUTE_CTRL;
+
+    /* If the flags have changed after init, let any clients know via a change event */
+    if (s->state != PA_SINK_INIT && flags != s->flags)
+        pa_subscription_post(s->core, PA_SUBSCRIPTION_EVENT_SINK|PA_SUBSCRIPTION_EVENT_CHANGE, s->index);
+}
+
+static void enable_flat_volume(pa_sink *s, pa_bool_t enable) {
+    pa_sink_flags_t flags;
+
+    pa_assert(s);
+
+    /* Always follow the overall user preference here */
+    enable = enable && s->core->flat_volumes;
+
+    /* Save the current flags so we can tell if they've changed */
+    flags = s->flags;
+
+    if (enable)
+        s->flags |= PA_SINK_FLAT_VOLUME;
+    else
+        s->flags &= ~PA_SINK_FLAT_VOLUME;
+
+    /* If the flags have changed after init, let any clients know via a change event */
+    if (s->state != PA_SINK_INIT && flags != s->flags)
+        pa_subscription_post(s->core, PA_SUBSCRIPTION_EVENT_SINK|PA_SUBSCRIPTION_EVENT_CHANGE, s->index);
+}
+
+void pa_sink_enable_decibel_volume(pa_sink *s, pa_bool_t enable) {
+    pa_sink_flags_t flags;
+
+    pa_assert(s);
+
+    /* Save the current flags so we can tell if they've changed */
+    flags = s->flags;
+
+    if (enable) {
+        s->flags |= PA_SINK_DECIBEL_VOLUME;
+        enable_flat_volume(s, TRUE);
+    } else {
+        s->flags &= ~PA_SINK_DECIBEL_VOLUME;
+        enable_flat_volume(s, FALSE);
+    }
+
+    /* If the flags have changed after init, let any clients know via a change event */
+    if (s->state != PA_SINK_INIT && flags != s->flags)
+        pa_subscription_post(s->core, PA_SUBSCRIPTION_EVENT_SINK|PA_SUBSCRIPTION_EVENT_CHANGE, s->index);
+}
+
 /* Called from main context */
 void pa_sink_put(pa_sink* s) {
     pa_sink_assert_ref(s);
@@ -462,8 +578,18 @@ void pa_sink_put(pa_sink* s) {
     pa_assert(s->thread_info.min_latency <= s->thread_info.max_latency);
 
     /* Generally, flags should be initialized via pa_sink_new(). As a
-     * special exception we allow volume related flags to be set
-     * between _new() and _put(). */
+     * special exception we allow some volume related flags to be set
+     * between _new() and _put() by the callback setter functions above.
+     *
+     * Thus we implement a couple safeguards here which ensure the above
+     * setters were used (or at least the implementor made manual changes
+     * in a compatible way).
+     *
+     * Note: All of these flags set here can change over the life time
+     * of the sink. */
+    pa_assert(!(s->flags & PA_SINK_HW_VOLUME_CTRL) || s->set_volume);
+    pa_assert(!(s->flags & PA_SINK_DEFERRED_VOLUME) || s->write_volume);
+    pa_assert(!(s->flags & PA_SINK_HW_MUTE_CTRL) || s->set_mute);
 
     /* XXX: Currently decibel volume is disabled for all sinks that use volume
      * sharing. When the master sink supports decibel volume, it would be good
@@ -472,17 +598,22 @@ void pa_sink_put(pa_sink* s) {
      * a master sink to another. One solution for this problem would be to
      * remove user-visible volume altogether from filter sinks when volume
      * sharing is used, but the current approach was easier to implement... */
+    /* We always support decibel volumes in software, otherwise we leave it to
+     * the sink implementor to set this flag as needed.
+     *
+     * Note: This flag can also change over the life time of the sink. */
     if (!(s->flags & PA_SINK_HW_VOLUME_CTRL) && !(s->flags & PA_SINK_SHARE_VOLUME_WITH_MASTER))
-        s->flags |= PA_SINK_DECIBEL_VOLUME;
+        pa_sink_enable_decibel_volume(s, TRUE);
 
-    if ((s->flags & PA_SINK_DECIBEL_VOLUME) && s->core->flat_volumes)
-        s->flags |= PA_SINK_FLAT_VOLUME;
+    /* If the sink implementor support DB volumes by itself, we should always
+     * try and enable flat volumes too */
+    if ((s->flags & PA_SINK_DECIBEL_VOLUME))
+        enable_flat_volume(s, TRUE);
 
     if (s->flags & PA_SINK_SHARE_VOLUME_WITH_MASTER) {
-        pa_sink *root_sink = s->input_to_master->sink;
+        pa_sink *root_sink = pa_sink_get_master(s);
 
-        while (root_sink->flags & PA_SINK_SHARE_VOLUME_WITH_MASTER)
-            root_sink = root_sink->input_to_master->sink;
+        pa_assert(root_sink);
 
         s->reference_volume = root_sink->reference_volume;
         pa_cvolume_remap(&s->reference_volume, &root_sink->channel_map, &s->channel_map);
@@ -506,10 +637,6 @@ void pa_sink_put(pa_sink* s) {
     pa_assert(!(s->flags & PA_SINK_DYNAMIC_LATENCY) == (s->thread_info.fixed_latency != 0));
     pa_assert(!(s->flags & PA_SINK_LATENCY) == !(s->monitor_source->flags & PA_SOURCE_LATENCY));
     pa_assert(!(s->flags & PA_SINK_DYNAMIC_LATENCY) == !(s->monitor_source->flags & PA_SOURCE_DYNAMIC_LATENCY));
-    pa_assert(!(s->flags & PA_SINK_HW_VOLUME_CTRL) || s->set_volume);
-    pa_assert(!(s->flags & PA_SINK_SYNC_VOLUME) || (s->flags & PA_SINK_HW_VOLUME_CTRL));
-    pa_assert(!(s->flags & PA_SINK_SYNC_VOLUME) || s->write_volume);
-    pa_assert(!(s->flags & PA_SINK_HW_MUTE_CTRL) || s->set_mute);
 
     pa_assert(s->monitor_source->thread_info.fixed_latency == s->thread_info.fixed_latency);
     pa_assert(s->monitor_source->thread_info.min_latency == s->thread_info.min_latency);
@@ -608,14 +735,8 @@ static void sink_free(pa_object *o) {
     if (s->proplist)
         pa_proplist_free(s->proplist);
 
-    if (s->ports) {
-        pa_device_port *p;
-
-        while ((p = pa_hashmap_steal_first(s->ports)))
-            pa_device_port_free(p);
-
-        pa_hashmap_free(s->ports, NULL, NULL);
-    }
+    if (s->ports)
+        pa_device_port_hashmap_free(s->ports);
 
     pa_xfree(s);
 }
@@ -742,7 +863,7 @@ void pa_sink_move_all_finish(pa_sink *s, pa_queue *q, pa_bool_t save) {
         pa_sink_input_unref(i);
     }
 
-    pa_queue_free(q, NULL, NULL);
+    pa_queue_free(q, NULL);
 }
 
 /* Called from main context */
@@ -757,7 +878,7 @@ void pa_sink_move_all_fail(pa_queue *q) {
         pa_sink_input_unref(i);
     }
 
-    pa_queue_free(q, NULL, NULL);
+    pa_queue_free(q, NULL);
 }
 
 /* Called from IO thread context */
@@ -784,7 +905,7 @@ void pa_sink_process_rewind(pa_sink *s, size_t nbytes) {
 
     if (nbytes > 0) {
         pa_log_debug("Processing rewind...");
-        if (s->flags & PA_SINK_SYNC_VOLUME)
+        if (s->flags & PA_SINK_DEFERRED_VOLUME)
             pa_sink_volume_change_rewind(s, nbytes);
     }
 
@@ -1179,6 +1300,83 @@ void pa_sink_render_full(pa_sink *s, size_t length, pa_memchunk *result) {
 }
 
 /* Called from main thread */
+pa_bool_t pa_sink_update_rate(pa_sink *s, uint32_t rate, pa_bool_t passthrough)
+{
+    if (s->update_rate) {
+        uint32_t desired_rate = rate;
+        uint32_t default_rate = s->default_sample_rate;
+        uint32_t alternate_rate = s->alternate_sample_rate;
+        uint32_t idx;
+        pa_sink_input *i;
+        pa_bool_t use_alternate = FALSE;
+
+        if (PA_UNLIKELY(default_rate == alternate_rate)) {
+            pa_log_warn("Default and alternate sample rates are the same.");
+            return FALSE;
+        }
+
+        if (PA_SINK_IS_RUNNING(s->state)) {
+            pa_log_info("Cannot update rate, SINK_IS_RUNNING, will keep using %u kHz",
+                        s->sample_spec.rate);
+            return FALSE;
+        }
+
+        if (s->monitor_source) {
+            if (PA_SOURCE_IS_RUNNING(s->monitor_source->state) == TRUE) {
+                pa_log_info("Cannot update rate, monitor source is RUNNING");
+                return FALSE;
+            }
+        }
+
+        if (PA_UNLIKELY (desired_rate < 8000 ||
+                         desired_rate > PA_RATE_MAX))
+            return FALSE;
+
+        if (!passthrough) {
+            pa_assert(default_rate % 4000 || default_rate % 11025);
+            pa_assert(alternate_rate % 4000 || alternate_rate % 11025);
+
+            if (default_rate % 4000) {
+                /* default is a 11025 multiple */
+                if ((alternate_rate % 4000 == 0) && (desired_rate % 4000 == 0))
+                    use_alternate=TRUE;
+            } else {
+                /* default is 4000 multiple */
+                if ((alternate_rate % 11025 == 0) && (desired_rate % 11025 == 0))
+                    use_alternate=TRUE;
+            }
+
+            if (use_alternate)
+                desired_rate = alternate_rate;
+            else
+                desired_rate = default_rate;
+        } else {
+            desired_rate = rate; /* use stream sampling rate, discard default/alternate settings */
+        }
+
+        if (!passthrough && pa_sink_used_by(s) > 0)
+            return FALSE;
+
+        pa_sink_suspend(s, TRUE, PA_SUSPEND_IDLE); /* needed before rate update, will be resumed automatically */
+
+        if (s->update_rate(s, desired_rate) == TRUE) {
+            /* update monitor source as well */
+            if (s->monitor_source && !passthrough)
+                pa_source_update_rate(s->monitor_source, desired_rate, FALSE);
+            pa_log_info("Changed sampling rate successfully");
+
+            PA_IDXSET_FOREACH(i, s->inputs, idx) {
+                if (i->state == PA_SINK_INPUT_CORKED)
+                    pa_sink_input_update_rate(i);
+            }
+
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/* Called from main thread */
 pa_usec_t pa_sink_get_latency(pa_sink *s) {
     pa_usec_t usec = 0;
 
@@ -1235,10 +1433,27 @@ pa_usec_t pa_sink_get_latency_within_thread(pa_sink *s) {
 pa_bool_t pa_sink_flat_volume_enabled(pa_sink *s) {
     pa_sink_assert_ref(s);
 
-    while (s->flags & PA_SINK_SHARE_VOLUME_WITH_MASTER)
-        s = s->input_to_master->sink;
+    s = pa_sink_get_master(s);
 
-    return (s->flags & PA_SINK_FLAT_VOLUME);
+    if (PA_LIKELY(s))
+        return (s->flags & PA_SINK_FLAT_VOLUME);
+    else
+        return FALSE;
+}
+
+/* Called from the main thread (and also from the IO thread while the main
+ * thread is waiting). */
+pa_sink *pa_sink_get_master(pa_sink *s) {
+    pa_sink_assert_ref(s);
+
+    while (s && (s->flags & PA_SINK_SHARE_VOLUME_WITH_MASTER)) {
+        if (PA_UNLIKELY(!s->input_to_master))
+            return NULL;
+
+        s = s->input_to_master->sink;
+    }
+
+    return s;
 }
 
 /* Called from main context */
@@ -1257,6 +1472,35 @@ pa_bool_t pa_sink_is_passthrough(pa_sink *s) {
     }
 
     return FALSE;
+}
+
+/* Called from main context */
+void pa_sink_enter_passthrough(pa_sink *s) {
+    pa_cvolume volume;
+
+    /* disable the monitor in passthrough mode */
+    if (s->monitor_source)
+        pa_source_suspend(s->monitor_source, TRUE, PA_SUSPEND_PASSTHROUGH);
+
+    /* set the volume to NORM */
+    s->saved_volume = *pa_sink_get_volume(s, TRUE);
+    s->saved_save_volume = s->save_volume;
+
+    pa_cvolume_set(&volume, s->sample_spec.channels, PA_MIN(s->base_volume, PA_VOLUME_NORM));
+    pa_sink_set_volume(s, &volume, TRUE, FALSE);
+}
+
+/* Called from main context */
+void pa_sink_leave_passthrough(pa_sink *s) {
+    /* Unsuspend monitor */
+    if (s->monitor_source)
+        pa_source_suspend(s->monitor_source, FALSE, PA_SUSPEND_PASSTHROUGH);
+
+    /* Restore sink volume to what it was before we entered passthrough mode */
+    pa_sink_set_volume(s, &s->saved_volume, TRUE, s->saved_save_volume);
+
+    pa_cvolume_init(&s->saved_volume);
+    s->saved_save_volume = FALSE;
 }
 
 /* Called from main context. */
@@ -1618,7 +1862,7 @@ static pa_bool_t update_reference_volume(pa_sink *s, const pa_cvolume *v, const 
          * due to rounding errors. If that happens, we still want to propagate
          * the changed root sink volume to the sinks connected to the
          * intermediate sink that didn't change its volume. This theoretical
-         * possiblity is the reason why we have that !(s->flags &
+         * possibility is the reason why we have that !(s->flags &
          * PA_SINK_SHARE_VOLUME_WITH_MASTER) condition. Probably nobody would
          * notice even if we returned here FALSE always if
          * reference_volume_changed is FALSE. */
@@ -1640,7 +1884,7 @@ void pa_sink_set_volume(
         pa_bool_t save) {
 
     pa_cvolume new_reference_volume;
-    pa_sink *root_sink = s;
+    pa_sink *root_sink;
 
     pa_sink_assert_ref(s);
     pa_assert_ctl_context();
@@ -1649,17 +1893,19 @@ void pa_sink_set_volume(
     pa_assert(volume || pa_sink_flat_volume_enabled(s));
     pa_assert(!volume || volume->channels == 1 || pa_cvolume_compatible(volume, &s->sample_spec));
 
-    /* make sure we don't change the volume when a PASSTHROUGH input is connected */
-    if (pa_sink_is_passthrough(s)) {
-        /* FIXME: Need to notify client that volume control is disabled */
+    /* make sure we don't change the volume when a PASSTHROUGH input is connected ...
+     * ... *except* if we're being invoked to reset the volume to ensure 0 dB gain */
+    if (pa_sink_is_passthrough(s) && (!volume || !pa_cvolume_is_norm(volume))) {
         pa_log_warn("Cannot change volume, Sink is connected to PASSTHROUGH input");
         return;
     }
 
     /* In case of volume sharing, the volume is set for the root sink first,
      * from which it's then propagated to the sharing sinks. */
-    while (root_sink->flags & PA_SINK_SHARE_VOLUME_WITH_MASTER)
-        root_sink = root_sink->input_to_master->sink;
+    root_sink = pa_sink_get_master(s);
+
+    if (PA_UNLIKELY(!root_sink))
+        return;
 
     /* As a special exception we accept mono volumes on all sinks --
      * even on those with more complex channel maps */
@@ -1673,13 +1919,7 @@ void pa_sink_set_volume(
         }
 
         pa_cvolume_remap(&new_reference_volume, &s->channel_map, &root_sink->channel_map);
-    }
 
-    /* If volume is NULL we synchronize the sink's real and reference
-     * volumes with the stream volumes. If it is not NULL we update
-     * the reference_volume with it. */
-
-    if (volume) {
         if (update_reference_volume(root_sink, &new_reference_volume, &root_sink->channel_map, save)) {
             if (pa_sink_flat_volume_enabled(root_sink)) {
                 /* OK, propagate this volume change back to the inputs */
@@ -1692,6 +1932,9 @@ void pa_sink_set_volume(
         }
 
     } else {
+        /* If volume is NULL we synchronize the sink's real and
+         * reference volumes with the stream volumes. */
+
         pa_assert(pa_sink_flat_volume_enabled(root_sink));
 
         /* Ok, let's determine the new real volume */
@@ -1699,6 +1942,9 @@ void pa_sink_set_volume(
 
         /* Let's 'push' the reference volume if necessary */
         pa_cvolume_merge(&new_reference_volume, &s->reference_volume, &root_sink->real_volume);
+        /* If the sink and it's root don't have the same number of channels, we need to remap */
+        if (s != root_sink && !pa_channel_map_equal(&s->channel_map, &root_sink->channel_map))
+            pa_cvolume_remap(&new_reference_volume, &s->channel_map, &root_sink->channel_map);
         update_reference_volume(root_sink, &new_reference_volume, &root_sink->channel_map, save);
 
         /* Now that the reference volume is updated, we can update the streams'
@@ -1712,7 +1958,7 @@ void pa_sink_set_volume(
          * apply one to root_sink->soft_volume */
 
         pa_cvolume_reset(&root_sink->soft_volume, root_sink->sample_spec.channels);
-        if (!(root_sink->flags & PA_SINK_SYNC_VOLUME))
+        if (!(root_sink->flags & PA_SINK_DEFERRED_VOLUME))
             root_sink->set_volume(root_sink);
 
     } else
@@ -1728,9 +1974,11 @@ void pa_sink_set_volume(
 /* Called from the io thread if sync volume is used, otherwise from the main thread.
  * Only to be called by sink implementor */
 void pa_sink_set_soft_volume(pa_sink *s, const pa_cvolume *volume) {
+
     pa_sink_assert_ref(s);
     pa_assert(!(s->flags & PA_SINK_SHARE_VOLUME_WITH_MASTER));
-    if (s->flags & PA_SINK_SYNC_VOLUME)
+
+    if (s->flags & PA_SINK_DEFERRED_VOLUME)
         pa_sink_assert_io_context(s);
     else
         pa_assert_ctl_context();
@@ -1740,7 +1988,7 @@ void pa_sink_set_soft_volume(pa_sink *s, const pa_cvolume *volume) {
     else
         s->soft_volume = *volume;
 
-    if (PA_SINK_IS_LINKED(s->state) && !(s->flags & PA_SINK_SYNC_VOLUME))
+    if (PA_SINK_IS_LINKED(s->state) && !(s->flags & PA_SINK_DEFERRED_VOLUME))
         pa_assert_se(pa_asyncmsgq_send(s->asyncmsgq, PA_MSGOBJECT(s), PA_SINK_MESSAGE_SET_VOLUME, NULL, 0, NULL) == 0);
     else
         s->thread_info.soft_volume = s->soft_volume;
@@ -1833,7 +2081,7 @@ const pa_cvolume *pa_sink_get_volume(pa_sink *s, pa_bool_t force_refresh) {
 
         old_real_volume = s->real_volume;
 
-        if (!(s->flags & PA_SINK_SYNC_VOLUME) && s->get_volume)
+        if (!(s->flags & PA_SINK_DEFERRED_VOLUME) && s->get_volume)
             s->get_volume(s);
 
         pa_assert_se(pa_asyncmsgq_send(s->asyncmsgq, PA_MSGOBJECT(s), PA_SINK_MESSAGE_GET_VOLUME, NULL, 0, NULL) == 0);
@@ -1874,7 +2122,7 @@ void pa_sink_set_mute(pa_sink *s, pa_bool_t mute, pa_bool_t save) {
     s->muted = mute;
     s->save_muted = (old_muted == s->muted && s->save_muted) || save;
 
-    if (!(s->flags & PA_SINK_SYNC_VOLUME) && s->set_mute)
+    if (!(s->flags & PA_SINK_DEFERRED_VOLUME) && s->set_mute)
         s->set_mute(s);
 
     pa_assert_se(pa_asyncmsgq_send(s->asyncmsgq, PA_MSGOBJECT(s), PA_SINK_MESSAGE_SET_MUTE, NULL, 0, NULL) == 0);
@@ -1893,7 +2141,7 @@ pa_bool_t pa_sink_get_mute(pa_sink *s, pa_bool_t force_refresh) {
     if (s->refresh_muted || force_refresh) {
         pa_bool_t old_muted = s->muted;
 
-        if (!(s->flags & PA_SINK_SYNC_VOLUME) && s->get_mute)
+        if (!(s->flags & PA_SINK_DEFERRED_VOLUME) && s->get_mute)
             s->get_mute(s);
 
         pa_assert_se(pa_asyncmsgq_send(s->asyncmsgq, PA_MSGOBJECT(s), PA_SINK_MESSAGE_GET_MUTE, NULL, 0, NULL) == 0);
@@ -1989,7 +2237,7 @@ unsigned pa_sink_linked_by(pa_sink *s) {
     ret = pa_idxset_size(s->inputs);
 
     /* We add in the number of streams connected to us here. Please
-     * note the asymmmetry to pa_sink_used_by()! */
+     * note the asymmetry to pa_sink_used_by()! */
 
     if (s->monitor_source)
         ret += pa_source_linked_by(s->monitor_source);
@@ -2036,7 +2284,7 @@ unsigned pa_sink_check_suspend(pa_sink *s) {
         /* We do not assert here. It is perfectly valid for a sink input to
          * be in the INIT state (i.e. created, marked done but not yet put)
          * and we should not care if it's unlinked as it won't contribute
-         * towarards our busy status.
+         * towards our busy status.
          */
         if (!PA_SINK_INPUT_IS_LINKED(st))
             continue;
@@ -2143,6 +2391,18 @@ int pa_sink_process_msg(pa_msgobject *o, int code, void *userdata, int64_t offse
              * slow start, i.e. need some time to buffer client
              * samples before beginning streaming. */
 
+            /* FIXME: Actually rewinding should be requested before
+             * updating the sink requested latency, because updating
+             * the requested latency updates also max_rewind of the
+             * sink. Now consider this: a sink has a 10 s buffer and
+             * nobody has requested anything less. Then a new stream
+             * appears while the sink buffer is full. The new stream
+             * requests e.g. 100 ms latency. That request is forwarded
+             * to the sink, so now max_rewind is 100 ms. When a rewind
+             * is requested, the sink will only rewind 100 ms, and the
+             * new stream will have to wait about 10 seconds before it
+             * becomes audible. */
+
             /* In flat volume mode we need to update the volume as
              * well */
             return o->process_msg(o, PA_SINK_MESSAGE_SET_SHARED_VOLUME, NULL, 0, NULL);
@@ -2204,6 +2464,46 @@ int pa_sink_process_msg(pa_msgobject *o, int code, void *userdata, int64_t offse
                 pa_usec_t usec = 0;
                 size_t sink_nbytes, total_nbytes;
 
+                /* The old sink probably has some audio from this
+                 * stream in its buffer. We want to "take it back" as
+                 * much as possible and play it to the new sink. We
+                 * don't know at this point how much the old sink can
+                 * rewind. We have to pick something, and that
+                 * something is the full latency of the old sink here.
+                 * So we rewind the stream buffer by the sink latency
+                 * amount, which may be more than what we should
+                 * rewind. This can result in a chunk of audio being
+                 * played both to the old sink and the new sink.
+                 *
+                 * FIXME: Fix this code so that we don't have to make
+                 * guesses about how much the sink will actually be
+                 * able to rewind. If someone comes up with a solution
+                 * for this, something to note is that the part of the
+                 * latency that the old sink couldn't rewind should
+                 * ideally be compensated after the stream has moved
+                 * to the new sink by adding silence. The new sink
+                 * most likely can't start playing the moved stream
+                 * immediately, and that gap should be removed from
+                 * the "compensation silence" (at least at the time of
+                 * writing this, the move finish code will actually
+                 * already take care of dropping the new sink's
+                 * unrewindable latency, so taking into account the
+                 * unrewindable latency of the old sink is the only
+                 * problem).
+                 *
+                 * The render_memblockq contents are discarded,
+                 * because when the sink changes, the format of the
+                 * audio stored in the render_memblockq may change
+                 * too, making the stored audio invalid. FIXME:
+                 * However, the read and write indices are moved back
+                 * the same amount, so if they are not the same now,
+                 * they won't be the same after the rewind either. If
+                 * the write index of the render_memblockq is ahead of
+                 * the read index, then the render_memblockq will feed
+                 * the new sink some silence first, which it shouldn't
+                 * do. The write index should be flushed to be the
+                 * same as the read index. */
+
                 /* Get the latency of the sink */
                 usec = pa_sink_get_latency_within_thread(s);
                 sink_nbytes = pa_usec_to_bytes(usec, &s->sample_spec);
@@ -2253,15 +2553,27 @@ int pa_sink_process_msg(pa_msgobject *o, int code, void *userdata, int64_t offse
             if (i->attach)
                 i->attach(i);
 
-            if (i->thread_info.requested_sink_latency != (pa_usec_t) -1)
-                pa_sink_input_set_requested_latency_within_thread(i, i->thread_info.requested_sink_latency);
-
-            pa_sink_input_update_max_rewind(i, s->thread_info.max_rewind);
-            pa_sink_input_update_max_request(i, s->thread_info.max_request);
-
             if (i->thread_info.state != PA_SINK_INPUT_CORKED) {
                 pa_usec_t usec = 0;
                 size_t nbytes;
+
+                /* In the ideal case the new sink would start playing
+                 * the stream immediately. That requires the sink to
+                 * be able to rewind all of its latency, which usually
+                 * isn't possible, so there will probably be some gap
+                 * before the moved stream becomes audible. We then
+                 * have two possibilities: 1) start playing the stream
+                 * from where it is now, or 2) drop the unrewindable
+                 * latency of the sink from the stream. With option 1
+                 * we won't lose any audio but the stream will have a
+                 * pause. With option 2 we may lose some audio but the
+                 * stream time will be somewhat in sync with the wall
+                 * clock. Lennart seems to have chosen option 2 (one
+                 * of the reasons might have been that option 1 is
+                 * actually much harder to implement), so we drop the
+                 * latency of the new sink from the moved stream and
+                 * hope that the sink will undo most of that in the
+                 * rewind. */
 
                 /* Get the latency of the sink */
                 usec = pa_sink_get_latency_within_thread(s);
@@ -2274,22 +2586,32 @@ int pa_sink_process_msg(pa_msgobject *o, int code, void *userdata, int64_t offse
                 pa_sink_request_rewind(s, nbytes);
             }
 
+            /* Updating the requested sink latency has to be done
+             * after the sink rewind request, not before, because
+             * otherwise the sink may limit the rewind amount
+             * needlessly. */
+
+            if (i->thread_info.requested_sink_latency != (pa_usec_t) -1)
+                pa_sink_input_set_requested_latency_within_thread(i, i->thread_info.requested_sink_latency);
+
+            pa_sink_input_update_max_rewind(i, s->thread_info.max_rewind);
+            pa_sink_input_update_max_request(i, s->thread_info.max_request);
+
             return o->process_msg(o, PA_SINK_MESSAGE_SET_SHARED_VOLUME, NULL, 0, NULL);
         }
 
         case PA_SINK_MESSAGE_SET_SHARED_VOLUME: {
-            pa_sink *root_sink = s;
+            pa_sink *root_sink = pa_sink_get_master(s);
 
-            while (root_sink->flags & PA_SINK_SHARE_VOLUME_WITH_MASTER)
-                root_sink = root_sink->input_to_master->sink;
+            if (PA_LIKELY(root_sink))
+                set_shared_volume_within_thread(root_sink);
 
-            set_shared_volume_within_thread(root_sink);
             return 0;
         }
 
         case PA_SINK_MESSAGE_SET_VOLUME_SYNCED:
 
-            if (s->flags & PA_SINK_SYNC_VOLUME) {
+            if (s->flags & PA_SINK_DEFERRED_VOLUME) {
                 s->set_volume(s);
                 pa_sink_volume_change_push(s);
             }
@@ -2310,7 +2632,7 @@ int pa_sink_process_msg(pa_msgobject *o, int code, void *userdata, int64_t offse
 
         case PA_SINK_MESSAGE_GET_VOLUME:
 
-            if ((s->flags & PA_SINK_SYNC_VOLUME) && s->get_volume) {
+            if ((s->flags & PA_SINK_DEFERRED_VOLUME) && s->get_volume) {
                 s->get_volume(s);
                 pa_sink_volume_change_flush(s);
                 pa_sw_cvolume_divide(&s->thread_info.current_hw_volume, &s->real_volume, &s->soft_volume);
@@ -2331,14 +2653,14 @@ int pa_sink_process_msg(pa_msgobject *o, int code, void *userdata, int64_t offse
                 pa_sink_request_rewind(s, (size_t) -1);
             }
 
-            if (s->flags & PA_SINK_SYNC_VOLUME && s->set_mute)
+            if (s->flags & PA_SINK_DEFERRED_VOLUME && s->set_mute)
                 s->set_mute(s);
 
             return 0;
 
         case PA_SINK_MESSAGE_GET_MUTE:
 
-            if (s->flags & PA_SINK_SYNC_VOLUME && s->get_mute)
+            if (s->flags & PA_SINK_DEFERRED_VOLUME && s->get_mute)
                 s->get_mute(s);
 
             return 0;
@@ -2453,6 +2775,10 @@ int pa_sink_process_msg(pa_msgobject *o, int code, void *userdata, int64_t offse
         case PA_SINK_MESSAGE_UPDATE_VOLUME_AND_MUTE:
             /* This message is sent from IO-thread and handled in main thread. */
             pa_assert_ctl_context();
+
+            /* Make sure we're not messing with main thread when no longer linked */
+            if (!PA_SINK_IS_LINKED(s->state))
+                return 0;
 
             pa_sink_get_volume(s, TRUE);
             pa_sink_get_mute(s, TRUE);
@@ -2614,6 +2940,7 @@ pa_usec_t pa_sink_get_requested_latency(pa_sink *s) {
         return 0;
 
     pa_assert_se(pa_asyncmsgq_send(s->asyncmsgq, PA_MSGOBJECT(s), PA_SINK_MESSAGE_GET_REQUESTED_LATENCY, &usec, 0, NULL) == 0);
+
     return usec;
 }
 
@@ -2871,8 +3198,8 @@ void pa_sink_set_fixed_latency_within_thread(pa_sink *s, pa_usec_t latency) {
 /* Called from main context */
 size_t pa_sink_get_max_rewind(pa_sink *s) {
     size_t r;
-    pa_sink_assert_ref(s);
     pa_assert_ctl_context();
+    pa_sink_assert_ref(s);
 
     if (!PA_SINK_IS_LINKED(s->state))
         return s->thread_info.max_rewind;
@@ -2900,6 +3227,7 @@ size_t pa_sink_get_max_request(pa_sink *s) {
 int pa_sink_set_port(pa_sink *s, const char *name, pa_bool_t save) {
     pa_device_port *port;
     int ret;
+
     pa_sink_assert_ref(s);
     pa_assert_ctl_context();
 
@@ -2919,7 +3247,7 @@ int pa_sink_set_port(pa_sink *s, const char *name, pa_bool_t save) {
         return 0;
     }
 
-    if (s->flags & PA_SINK_SYNC_VOLUME) {
+    if (s->flags & PA_SINK_DEFERRED_VOLUME) {
         struct sink_message_set_port msg = { .port = port, .ret = 0 };
         pa_assert_se(pa_asyncmsgq_send(s->asyncmsgq, PA_MSGOBJECT(s), PA_SINK_MESSAGE_SET_PORT, &msg, 0, NULL) == 0);
         ret = msg.ret;
@@ -3208,11 +3536,20 @@ static void pa_sink_volume_change_flush(pa_sink *s) {
 
 /* Called from the IO thread. */
 pa_bool_t pa_sink_volume_change_apply(pa_sink *s, pa_usec_t *usec_to_next) {
-    pa_usec_t now = pa_rtclock_now();
+    pa_usec_t now;
     pa_bool_t ret = FALSE;
 
     pa_assert(s);
+
+    if (!s->thread_info.volume_changes || !PA_SINK_IS_LINKED(s->state)) {
+        if (usec_to_next)
+            *usec_to_next = 0;
+        return ret;
+    }
+
     pa_assert(s->write_volume);
+
+    now = pa_rtclock_now();
 
     while (s->thread_info.volume_changes && now >= s->thread_info.volume_changes->at) {
         pa_sink_volume_change *c = s->thread_info.volume_changes;
@@ -3224,7 +3561,7 @@ pa_bool_t pa_sink_volume_change_apply(pa_sink *s, pa_usec_t *usec_to_next) {
         pa_sink_volume_change_free(c);
     }
 
-    if (s->write_volume && ret)
+    if (ret)
         s->write_volume(s);
 
     if (s->thread_info.volume_changes) {
@@ -3292,28 +3629,45 @@ pa_idxset* pa_sink_get_formats(pa_sink *s) {
 }
 
 /* Called from the main thread */
+/* Allows an external source to set what formats a sink supports if the sink
+ * permits this. The function makes a copy of the formats on success. */
+pa_bool_t pa_sink_set_formats(pa_sink *s, pa_idxset *formats) {
+    pa_assert(s);
+    pa_assert(formats);
+
+    if (s->set_formats)
+        /* Sink supports setting formats -- let's give it a shot */
+        return s->set_formats(s, formats);
+    else
+        /* Sink doesn't support setting this -- bail out */
+        return FALSE;
+}
+
+/* Called from the main thread */
 /* Checks if the sink can accept this format */
 pa_bool_t pa_sink_check_format(pa_sink *s, pa_format_info *f)
 {
-    pa_idxset *sink_formats = NULL;
-    pa_format_info *f_sink;
-    uint32_t i;
+    pa_idxset *formats = NULL;
     pa_bool_t ret = FALSE;
 
     pa_assert(s);
     pa_assert(f);
 
-    sink_formats = pa_sink_get_formats(s);
+    formats = pa_sink_get_formats(s);
 
-    PA_IDXSET_FOREACH(f_sink, sink_formats, i) {
-        if (pa_format_info_is_compatible(f_sink, f)) {
-            ret = TRUE;
-            break;
+    if (formats) {
+        pa_format_info *finfo_device;
+        uint32_t i;
+
+        PA_IDXSET_FOREACH(finfo_device, formats, i) {
+            if (pa_format_info_is_compatible(finfo_device, f)) {
+                ret = TRUE;
+                break;
+            }
         }
-    }
 
-    if (sink_formats)
-        pa_idxset_free(sink_formats, (pa_free2_cb_t) pa_format_info_free2, NULL);
+        pa_idxset_free(formats, (pa_free2_cb_t) pa_format_info_free2, NULL);
+    }
 
     return ret;
 }

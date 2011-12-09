@@ -25,12 +25,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#include <pulse/util.h>
-#include <pulse/xmalloc.h>
 #include <pulsecore/asyncmsgq.h>
 #include <pulsecore/thread.h>
 #include <pulsecore/log.h>
-#include <pulsecore/core-util.h>
 #include <pulsecore/macro.h>
 
 enum {
@@ -52,19 +49,19 @@ static void the_thread(void *_q) {
         switch (code) {
 
             case OPERATION_A:
-                printf("Operation A\n");
+                pa_log_info("Operation A");
                 break;
 
             case OPERATION_B:
-                printf("Operation B\n");
+                pa_log_info("Operation B");
                 break;
 
             case OPERATION_C:
-                printf("Operation C\n");
+                pa_log_info("Operation C");
                 break;
 
             case QUIT:
-                printf("quit\n");
+                pa_log_info("quit");
                 quit = 1;
                 break;
         }
@@ -82,22 +79,22 @@ int main(int argc, char *argv[]) {
 
     pa_assert_se(t = pa_thread_new("test", the_thread, q));
 
-    printf("Operation A post\n");
+    pa_log_info("Operation A post");
     pa_asyncmsgq_post(q, NULL, OPERATION_A, NULL, 0, NULL, NULL);
 
     pa_thread_yield();
 
-    printf("Operation B post\n");
+    pa_log_info("Operation B post");
     pa_asyncmsgq_post(q, NULL, OPERATION_B, NULL, 0, NULL, NULL);
 
     pa_thread_yield();
 
-    printf("Operation C send\n");
+    pa_log_info("Operation C send");
     pa_asyncmsgq_send(q, NULL, OPERATION_C, NULL, 0, NULL);
 
     pa_thread_yield();
 
-    printf("Quit post\n");
+    pa_log_info("Quit post");
     pa_asyncmsgq_post(q, NULL, QUIT, NULL, 0, NULL, NULL);
 
     pa_thread_free(t);

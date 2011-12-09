@@ -204,6 +204,7 @@ void pa_unset_env_recorded(void);
 pa_bool_t pa_in_system_mode(void);
 
 #define pa_streq(a,b) (!strcmp((a),(b)))
+pa_bool_t pa_str_in_list_spaces(const char *needle, const char *haystack);
 
 char *pa_get_host_name_malloc(void);
 char *pa_get_user_name_malloc(void);
@@ -228,7 +229,7 @@ unsigned pa_ncpus(void);
 char *pa_replace(const char*s, const char*a, const char *b);
 
 /* Escapes p by inserting backslashes in front of backslashes. chars is a
- * regular (ie. NULL-terminated) string containing additional characters that
+ * regular (i.e. NULL-terminated) string containing additional characters that
  * should be escaped. chars can be NULL. The caller has to free the returned
  * string. */
 char *pa_escape(const char *p, const char *chars);

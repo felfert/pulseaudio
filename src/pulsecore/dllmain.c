@@ -27,12 +27,11 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-#include <string.h>
 
 #include <windows.h>
 #include <winsock2.h>
 
-extern pa_win32_get_toplevel(HANDLE handle);
+extern char *pa_win32_get_toplevel(HANDLE handle);
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     WSADATA data;

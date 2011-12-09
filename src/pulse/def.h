@@ -124,6 +124,17 @@ typedef enum pa_context_flags {
 #define PA_CONTEXT_NOFAIL PA_CONTEXT_NOFAIL
 /** \endcond */
 
+/** The type of device we are dealing with */
+typedef enum pa_device_type {
+    PA_DEVICE_TYPE_SINK,     /**< Playback device */
+    PA_DEVICE_TYPE_SOURCE    /**< Recording device */
+} pa_device_type_t;
+
+/** \cond fulldocs */
+#define PA_DEVICE_TYPE_SINK PA_DEVICE_TYPE_SINK
+#define PA_DEVICE_TYPE_SOURCE PA_DEVICE_TYPE_SOURCE
+/** \endcond */
+
 /** The direction of a pa_stream object */
 typedef enum pa_stream_direction {
     PA_STREAM_NODIRECTION,   /**< Invalid direction */
@@ -712,7 +723,8 @@ typedef enum pa_sink_flags {
     /**< Flag to pass when no specific options are needed (used to avoid casting)  \since 0.9.19 */
 
     PA_SINK_HW_VOLUME_CTRL = 0x0001U,
-    /**< Supports hardware volume control */
+    /**< Supports hardware volume control. This is a dynamic flag and may
+     * change at runtime after the sink has initialized */
 
     PA_SINK_LATENCY = 0x0002U,
     /**< Supports latency querying */
@@ -725,10 +737,12 @@ typedef enum pa_sink_flags {
     /**< Is a networked sink of some kind. \since 0.9.7 */
 
     PA_SINK_HW_MUTE_CTRL = 0x0010U,
-    /**< Supports hardware mute control \since 0.9.11 */
+    /**< Supports hardware mute control. This is a dynamic flag and may
+     * change at runtime after the sink has initialized \since 0.9.11 */
 
     PA_SINK_DECIBEL_VOLUME = 0x0020U,
-    /**< Volume can be translated to dB with pa_sw_volume_to_dB()
+    /**< Volume can be translated to dB with pa_sw_volume_to_dB(). This is a
+     * dynamic flag and may change at runtime after the sink has initialized
      * \since 0.9.11 */
 
     PA_SINK_FLAT_VOLUME = 0x0040U,
@@ -739,19 +753,25 @@ typedef enum pa_sink_flags {
     /**< The latency can be adjusted dynamically depending on the
      * needs of the connected streams. \since 0.9.15 */
 
-    PA_SINK_SYNC_VOLUME = 0x0100U,
-    /**< The HW volume changes are syncronized with SW volume.
-     * \since 1.0 */
+    PA_SINK_SET_FORMATS = 0x0100U,
+    /**< The sink allows setting what formats are supported by the connected
+     * hardware. The actual functionality to do this might be provided by an
+     * extension. \since 1.0 */
 
+#ifdef __INCLUDED_FROM_PULSE_AUDIO
 /** \cond fulldocs */
     /* PRIVATE: Server-side values -- do not try to use these at client-side.
      * The server will filter out these flags anyway, so you should never see
      * these flags in sinks. */
 
-    PA_SINK_SHARE_VOLUME_WITH_MASTER = 0x0200U,
+    PA_SINK_SHARE_VOLUME_WITH_MASTER = 0x1000000U,
     /**< This sink shares the volume with the master sink (used by some filter
      * sinks). */
+
+    PA_SINK_DEFERRED_VOLUME = 0x2000000U,
+    /**< The HW volume changes are syncronized with SW volume. */
 /** \endcond */
+#endif
 
 } pa_sink_flags_t;
 
@@ -764,8 +784,10 @@ typedef enum pa_sink_flags {
 #define PA_SINK_DECIBEL_VOLUME PA_SINK_DECIBEL_VOLUME
 #define PA_SINK_FLAT_VOLUME PA_SINK_FLAT_VOLUME
 #define PA_SINK_DYNAMIC_LATENCY PA_SINK_DYNAMIC_LATENCY
-#define PA_SINK_SYNC_VOLUME PA_SINK_SYNC_VOLUME
-#define PA_SINK_SHARE_VOLUME_WITH_MASTER PA_SINK_SHARE_VOLUME_WITH_MASTER
+#define PA_SINK_SET_FORMATS PA_SINK_SET_FORMATS
+#ifdef __INCLUDED_FROM_PULSE_AUDIO
+#define PA_SINK_CLIENT_FLAGS_MASK 0xFFFFFF
+#endif
 
 /** \endcond */
 
@@ -804,6 +826,11 @@ static inline int PA_SINK_IS_OPENED(pa_sink_state_t x) {
     return x == PA_SINK_RUNNING || x == PA_SINK_IDLE;
 }
 
+/** Returns non-zero if sink is running. \since 1.0 */
+static inline int PA_SINK_IS_RUNNING(pa_sink_state_t x) {
+    return x == PA_SINK_RUNNING;
+}
+
 /** \cond fulldocs */
 #define PA_SINK_INVALID_STATE PA_SINK_INVALID_STATE
 #define PA_SINK_RUNNING PA_SINK_RUNNING
@@ -820,7 +847,8 @@ typedef enum pa_source_flags {
     /**< Flag to pass when no specific options are needed (used to avoid casting)  \since 0.9.19 */
 
     PA_SOURCE_HW_VOLUME_CTRL = 0x0001U,
-    /**< Supports hardware volume control */
+    /**< Supports hardware volume control. This is a dynamic flag and may
+     * change at runtime after the source has initialized */
 
     PA_SOURCE_LATENCY = 0x0002U,
     /**< Supports latency querying */
@@ -833,15 +861,35 @@ typedef enum pa_source_flags {
     /**< Is a networked source of some kind. \since 0.9.7 */
 
     PA_SOURCE_HW_MUTE_CTRL = 0x0010U,
-    /**< Supports hardware mute control \since 0.9.11 */
+    /**< Supports hardware mute control. This is a dynamic flag and may
+     * change at runtime after the source has initialized \since 0.9.11 */
 
     PA_SOURCE_DECIBEL_VOLUME = 0x0020U,
-    /**< Volume can be translated to dB with pa_sw_volume_to_dB()
+    /**< Volume can be translated to dB with pa_sw_volume_to_dB(). This is a
+     * dynamic flag and may change at runtime after the source has initialized
      * \since 0.9.11 */
 
-    PA_SOURCE_DYNAMIC_LATENCY = 0x0040U
+    PA_SOURCE_DYNAMIC_LATENCY = 0x0040U,
     /**< The latency can be adjusted dynamically depending on the
      * needs of the connected streams. \since 0.9.15 */
+
+    PA_SOURCE_FLAT_VOLUME = 0x0080U,
+    /**< This source is in flat volume mode, i.e. always the maximum of
+     * the volume of all connected outputs. \since 1.0 */
+
+#ifdef __INCLUDED_FROM_PULSE_AUDIO
+/** \cond fulldocs */
+    /* PRIVATE: Server-side values -- do not try to use these at client-side.
+     * The server will filter out these flags anyway, so you should never see
+     * these flags in sources. */
+
+    PA_SOURCE_SHARE_VOLUME_WITH_MASTER = 0x1000000U,
+    /**< This source shares the volume with the master source (used by some filter
+     * sources). */
+
+    PA_SOURCE_DEFERRED_VOLUME = 0x2000000U,
+    /**< The HW volume changes are syncronized with SW volume. */
+#endif
 } pa_source_flags_t;
 
 /** \cond fulldocs */
@@ -852,6 +900,11 @@ typedef enum pa_source_flags {
 #define PA_SOURCE_HW_MUTE_CTRL PA_SOURCE_HW_MUTE_CTRL
 #define PA_SOURCE_DECIBEL_VOLUME PA_SOURCE_DECIBEL_VOLUME
 #define PA_SOURCE_DYNAMIC_LATENCY PA_SOURCE_DYNAMIC_LATENCY
+#define PA_SOURCE_FLAT_VOLUME PA_SOURCE_FLAT_VOLUME
+#ifdef __INCLUDED_FROM_PULSE_AUDIO
+#define PA_SOURCE_CLIENT_FLAGS_MASK 0xFFFFFF
+#endif
+
 /** \endcond */
 
 /** Source state. \since 0.9.15 */
@@ -889,6 +942,11 @@ static inline int PA_SOURCE_IS_OPENED(pa_source_state_t x) {
     return x == PA_SOURCE_RUNNING || x == PA_SOURCE_IDLE;
 }
 
+/** Returns non-zero if source is running \since 1.0 */
+static inline int PA_SOURCE_IS_RUNNING(pa_source_state_t x) {
+    return x == PA_SOURCE_RUNNING;
+}
+
 /** \cond fulldocs */
 #define PA_SOURCE_INVALID_STATE PA_SOURCE_INVALID_STATE
 #define PA_SOURCE_RUNNING PA_SOURCE_RUNNING
@@ -918,6 +976,21 @@ typedef void (*pa_free_cb_t)(void *p);
  * to connect a new stream to renegotiate a format and continue
  * playback, \since 1.0 */
 #define PA_STREAM_EVENT_FORMAT_LOST "format-lost"
+
+/** Port availability / jack detection status
+ * \since 2.0 */
+typedef enum pa_port_available {
+    PA_PORT_AVAILABLE_UNKNOWN = 0, /**< This port does not support jack detection \since 2.0 */
+    PA_PORT_AVAILABLE_NO = 1,      /**< This port is not available, likely because the jack is not plugged in. \since 2.0 */
+    PA_PORT_AVAILABLE_YES = 2,     /**< This port is available, likely because the jack is plugged in. \since 2.0 */
+} pa_port_available_t;
+
+/** \cond fulldocs */
+#define PA_PORT_AVAILABLE_UNKNOWN PA_PORT_AVAILABLE_UNKNOWN
+#define PA_PORT_AVAILABLE_NO PA_PORT_AVAILABLE_NO
+#define PA_PORT_AVAILABLE_YES PA_PORT_AVAILABLE_YES
+
+/** \endcond */
 
 PA_C_DECL_END
 

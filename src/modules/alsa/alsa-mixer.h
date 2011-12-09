@@ -26,16 +26,12 @@
 #include <asoundlib.h>
 
 #include <pulse/sample.h>
-#include <pulse/volume.h>
 #include <pulse/mainloop-api.h>
 #include <pulse/channelmap.h>
-#include <pulse/proplist.h>
 #include <pulse/volume.h>
 
 #include <pulsecore/llist.h>
 #include <pulsecore/rtpoll.h>
-#include <pulsecore/core.h>
-#include <pulsecore/log.h>
 
 typedef struct pa_alsa_fdlist pa_alsa_fdlist;
 typedef struct pa_alsa_mixer_pdata pa_alsa_mixer_pdata;
@@ -212,19 +208,19 @@ void pa_alsa_option_dump(pa_alsa_option *o);
 
 void pa_alsa_element_dump(pa_alsa_element *e);
 
-pa_alsa_path *pa_alsa_path_new(const char *fname, pa_alsa_direction_t direction);
+pa_alsa_path *pa_alsa_path_new(const char *paths_dir, const char *fname, pa_alsa_direction_t direction);
 pa_alsa_path *pa_alsa_path_synthesize(const char *element, pa_alsa_direction_t direction);
 int pa_alsa_path_probe(pa_alsa_path *p, snd_mixer_t *m, pa_bool_t ignore_dB);
 void pa_alsa_path_dump(pa_alsa_path *p);
 int pa_alsa_path_get_volume(pa_alsa_path *p, snd_mixer_t *m, const pa_channel_map *cm, pa_cvolume *v);
 int pa_alsa_path_get_mute(pa_alsa_path *path, snd_mixer_t *m, pa_bool_t *muted);
-int pa_alsa_path_set_volume(pa_alsa_path *path, snd_mixer_t *m, const pa_channel_map *cm, pa_cvolume *v, pa_bool_t write_to_hw);
+int pa_alsa_path_set_volume(pa_alsa_path *path, snd_mixer_t *m, const pa_channel_map *cm, pa_cvolume *v, pa_bool_t deferred_volume, pa_bool_t write_to_hw);
 int pa_alsa_path_set_mute(pa_alsa_path *path, snd_mixer_t *m, pa_bool_t muted);
 int pa_alsa_path_select(pa_alsa_path *p, snd_mixer_t *m);
 void pa_alsa_path_set_callback(pa_alsa_path *p, snd_mixer_t *m, snd_mixer_elem_callback_t cb, void *userdata);
 void pa_alsa_path_free(pa_alsa_path *p);
 
-pa_alsa_path_set *pa_alsa_path_set_new(pa_alsa_mapping *m, pa_alsa_direction_t direction);
+pa_alsa_path_set *pa_alsa_path_set_new(pa_alsa_mapping *m, pa_alsa_direction_t direction, const char *paths_dir);
 void pa_alsa_path_set_probe(pa_alsa_path_set *s, snd_mixer_t *m, pa_bool_t ignore_dB);
 void pa_alsa_path_set_dump(pa_alsa_path_set *s);
 void pa_alsa_path_set_set_callback(pa_alsa_path_set *ps, snd_mixer_t *m, snd_mixer_elem_callback_t cb, void *userdata);
@@ -281,7 +277,7 @@ struct pa_alsa_decibel_fix {
     long max_step;
 
     /* An array that maps alsa volume element steps to decibels. The steps can
-     * be used as indices to this array, after substracting min_step from the
+     * be used as indices to this array, after subtracting min_step from the
      * real value.
      *
      * The values are actually stored as integers representing millibels,
@@ -327,6 +323,6 @@ struct pa_alsa_port_data {
     pa_alsa_setting *setting;
 };
 
-void pa_alsa_add_ports(pa_hashmap **p, pa_alsa_path_set *ps);
+void pa_alsa_add_ports(pa_core *c, pa_hashmap **p, pa_alsa_path_set *ps);
 
 #endif

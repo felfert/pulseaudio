@@ -24,11 +24,9 @@
 #include <config.h>
 #endif
 
-#include <string.h>
 #include <errno.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <limits.h>
 
 #ifdef HAVE_NETINET_IN_H
 #include <netinet/in.h>
@@ -135,7 +133,7 @@
   PA_MODULE_DESCRIPTION("Native protocol "SOCKET_DESCRIPTION);
   PA_MODULE_USAGE("auth-anonymous=<don't check for cookies?> "
                   "auth-cookie=<path to cookie file> "
-                  "auth-cookie-enabled=<enable cookie authentification?> "
+                  "auth-cookie-enabled=<enable cookie authentication?> "
                   AUTH_USAGE
                   SOCKET_USAGE);
 #elif defined(USE_PROTOCOL_ESOUND)
@@ -164,7 +162,7 @@
                   "source=<source to connect to> "
                   "auth-anonymous=<don't verify cookies?> "
                   "auth-cookie=<path to cookie file> "
-                  "auth-cookie-enabled=<enable cookie authentification?> "
+                  "auth-cookie-enabled=<enable cookie authentication?> "
                   AUTH_USAGE
                   SOCKET_USAGE);
 #else

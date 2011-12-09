@@ -31,19 +31,15 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <sys/types.h>
-#include <sys/stat.h>
 
 #include <pulse/xmalloc.h>
-#include <pulse/timeval.h>
 
-#include <pulsecore/core-error.h>
 #include <pulsecore/module.h>
 #include <pulsecore/log.h>
 #include <pulsecore/hashmap.h>
 #include <pulsecore/idxset.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/namereg.h>
-#include <pulsecore/core-scache.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/dbus-shared.h>
 
@@ -210,7 +206,7 @@ static int hal_device_load_alsa(struct userdata *u, const char *udi, struct devi
 
     /* For each ALSA card that appears the control device will be the
      * last one to be created, this is considered part of the ALSA
-     * usperspace API. We rely on this and load our modules only when
+     * userspace API. We rely on this and load our modules only when
      * the control device is available assuming that *all* device
      * nodes have been properly created and assigned the right ACLs at
      * that time. Also see:

@@ -36,7 +36,6 @@
 #include <pulsecore/modargs.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/core-util.h>
-#include <pulsecore/core-error.h>
 
 #include "module-cli-symdef.h"
 
@@ -73,7 +72,9 @@ int pa__init(pa_module*m) {
     pa_iochannel *io;
     pa_modargs *ma;
     pa_bool_t exit_on_eof = FALSE;
+#ifndef OS_IS_WIN32
     int fd;
+#endif
 
     pa_assert(m);
 

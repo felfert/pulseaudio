@@ -25,11 +25,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#include <pulse/util.h>
-#include <pulse/xmalloc.h>
 #include <pulsecore/queue.h>
 #include <pulsecore/log.h>
-#include <pulsecore/core-util.h>
 #include <pulsecore/macro.h>
 
 int main(int argc, char *argv[]) {
@@ -61,7 +58,7 @@ int main(int argc, char *argv[]) {
     pa_queue_push(q, (void*) "sechs");
     pa_queue_push(q, (void*) "sieben");
 
-    pa_queue_free(q, NULL, NULL);
+    pa_queue_free(q, NULL);
 
     return 0;
 }

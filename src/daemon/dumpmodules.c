@@ -25,16 +25,15 @@
 #endif
 
 #include <string.h>
-#include <getopt.h>
 #include <stdio.h>
 #include <ltdl.h>
 
 #include <pulse/util.h>
-#include <pulse/i18n.h>
 
-#include <pulsecore/modinfo.h>
 #include <pulsecore/core-util.h>
+#include <pulsecore/i18n.h>
 #include <pulsecore/macro.h>
+#include <pulsecore/modinfo.h>
 
 #include "dumpmodules.h"
 

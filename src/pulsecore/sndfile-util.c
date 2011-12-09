@@ -29,18 +29,21 @@
 #include <pulse/utf8.h>
 
 #include <pulsecore/macro.h>
-#include <pulsecore/core-util.h>
 
 #include "sndfile-util.h"
 
 int pa_sndfile_read_sample_spec(SNDFILE *sf, pa_sample_spec *ss) {
     SF_INFO sfi;
+    int sf_errno;
 
     pa_assert(sf);
     pa_assert(ss);
 
     pa_zero(sfi);
-    pa_assert_se(sf_command(sf, SFC_GET_CURRENT_SF_INFO, &sfi, sizeof(sfi)) == 0);
+    if ((sf_errno = sf_command(sf, SFC_GET_CURRENT_SF_INFO, &sfi, sizeof(sfi)))) {
+        pa_log_error("sndfile: %s", sf_error_number(sf_errno));
+        return -1;
+    }
 
     switch (sfi.format & SF_FORMAT_SUBMASK) {
 
@@ -152,7 +155,7 @@ int pa_sndfile_read_channel_map(SNDFILE *sf, pa_channel_map *cm) {
 
     static const pa_channel_position_t table[] = {
         [SF_CHANNEL_MAP_MONO] =                  PA_CHANNEL_POSITION_MONO,
-        [SF_CHANNEL_MAP_LEFT] =                  PA_CHANNEL_POSITION_FRONT_LEFT, /* libsndfile distuingishes left und front-left, which we don't */
+        [SF_CHANNEL_MAP_LEFT] =                  PA_CHANNEL_POSITION_FRONT_LEFT, /* libsndfile distinguishes left and front-left, which we don't */
         [SF_CHANNEL_MAP_RIGHT] =                 PA_CHANNEL_POSITION_FRONT_RIGHT,
         [SF_CHANNEL_MAP_CENTER] =                PA_CHANNEL_POSITION_FRONT_CENTER,
         [SF_CHANNEL_MAP_FRONT_LEFT] =            PA_CHANNEL_POSITION_FRONT_LEFT,
@@ -176,6 +179,7 @@ int pa_sndfile_read_channel_map(SNDFILE *sf, pa_channel_map *cm) {
     };
 
     SF_INFO sfi;
+    int sf_errno;
     int *channels;
     unsigned c;
 
@@ -183,12 +187,13 @@ int pa_sndfile_read_channel_map(SNDFILE *sf, pa_channel_map *cm) {
     pa_assert(cm);
 
     pa_zero(sfi);
-    pa_assert_se(sf_command(sf, SFC_GET_CURRENT_SF_INFO, &sfi, sizeof(sfi)) == 0);
+    if ((sf_errno = sf_command(sf, SFC_GET_CURRENT_SF_INFO, &sfi, sizeof(sfi)))) {
+        pa_log_error("sndfile: %s", sf_error_number(sf_errno));
+        return -1;
+    }
 
     channels = pa_xnew(int, sfi.channels);
-    if (!sf_command(sf, SFC_GET_CHANNEL_MAP_INFO,
-                    channels, sizeof(channels[0]) * sfi.channels)) {
-
+    if (!sf_command(sf, SFC_GET_CHANNEL_MAP_INFO, channels, sizeof(channels[0]) * sfi.channels)) {
         pa_xfree(channels);
         return -1;
     }
@@ -326,6 +331,7 @@ void pa_sndfile_init_proplist(SNDFILE *sf, pa_proplist *p) {
 
     SF_INFO sfi;
     SF_FORMAT_INFO fi;
+    int sf_errno;
     unsigned c;
 
     pa_assert(sf);
@@ -347,7 +353,10 @@ void pa_sndfile_init_proplist(SNDFILE *sf, pa_proplist *p) {
     }
 
     pa_zero(sfi);
-    pa_assert_se(sf_command(sf, SFC_GET_CURRENT_SF_INFO, &sfi, sizeof(sfi)) == 0);
+    if ((sf_errno = sf_command(sf, SFC_GET_CURRENT_SF_INFO, &sfi, sizeof(sfi)))) {
+        pa_log_error("sndfile: %s", sf_error_number(sf_errno));
+        return;
+    }
 
     pa_zero(fi);
     fi.format = sfi.format;
@@ -447,7 +456,7 @@ int pa_sndfile_format_from_string(const char *name) {
 
         pa_assert_se(sf_command(NULL, SFC_GET_FORMAT_MAJOR, &fi, sizeof(fi)) == 0);
 
-        if (strncasecmp(name, fi.extension, strlen(name)) == 0)
+        if (strncasecmp(name, fi.name, strlen(name)) == 0)
             return fi.format;
     }
 

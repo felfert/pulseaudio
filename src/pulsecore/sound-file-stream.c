@@ -25,7 +25,6 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-#include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -40,7 +39,6 @@
 #include <pulsecore/log.h>
 #include <pulsecore/thread-mq.h>
 #include <pulsecore/core-util.h>
-#include <pulsecore/sample-util.h>
 #include <pulsecore/sndfile-util.h>
 
 #include "sound-file-stream.h"
@@ -322,7 +320,7 @@ int pa_play_file(
     u->sink_input->userdata = u;
 
     pa_sink_input_get_silence(u->sink_input, &silence);
-    u->memblockq = pa_memblockq_new(0, MEMBLOCKQ_MAXLENGTH, 0, pa_frame_size(&ss), 1, 1, 0, &silence);
+    u->memblockq = pa_memblockq_new("sound-file-stream memblockq", 0, MEMBLOCKQ_MAXLENGTH, 0, &ss, 1, 1, 0, &silence);
     pa_memblock_unref(silence.memblock);
 
     pa_sink_input_put(u->sink_input);

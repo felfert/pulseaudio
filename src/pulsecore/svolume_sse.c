@@ -24,13 +24,10 @@
 #include <config.h>
 #endif
 
-#include <pulse/timeval.h>
 #include <pulse/rtclock.h>
 
 #include <pulsecore/random.h>
 #include <pulsecore/macro.h>
-#include <pulsecore/g711.h>
-#include <pulsecore/core-util.h>
 #include <pulsecore/endianmacros.h>
 
 #include "cpu-x86.h"
@@ -154,7 +151,11 @@ static void pa_volume_s16ne_sse2(int16_t *samples, int32_t *volumes, unsigned ch
         "8:                             \n\t"
 
         : "+r" (samples), "+r" (volumes), "+r" (length), "=D" (channel), "=&r" (temp)
-        : "rm" ((pa_reg_x86)channels)
+#if defined (__i386__)
+        : "m" (channels)
+#else
+        : "r" ((pa_reg_x86)channels)
+#endif
         : "cc"
     );
 }
@@ -242,7 +243,11 @@ static void pa_volume_s16re_sse2(int16_t *samples, int32_t *volumes, unsigned ch
         "8:                             \n\t"
 
         : "+r" (samples), "+r" (volumes), "+r" (length), "=D" (channel), "=&r" (temp)
-        : "rm" ((pa_reg_x86)channels)
+#if defined (__i386__)
+        : "m" (channels)
+#else
+        : "r" ((pa_reg_x86)channels)
+#endif
         : "cc"
     );
 }
@@ -337,7 +342,7 @@ void pa_volume_func_init_sse(pa_cpu_x86_flag_t flags) {
 #endif
 
     if (flags & PA_CPU_X86_SSE2) {
-        pa_log_info("Initialising SSE2 optimized functions.");
+        pa_log_info("Initialising SSE2 optimized volume functions.");
 
         pa_set_volume_func(PA_SAMPLE_S16NE, (pa_do_volume_func_t) pa_volume_s16ne_sse2);
         pa_set_volume_func(PA_SAMPLE_S16RE, (pa_do_volume_func_t) pa_volume_s16re_sse2);

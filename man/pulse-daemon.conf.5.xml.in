@@ -26,14 +26,14 @@ USA.
   <synopsis>
     <p><file>~/.pulse/daemon.conf</file></p>
 
-    <p><file>@pulseconfdir@/daemon.conf</file></p>
+    <p><file>@PA_DEFAULT_CONFIG_DIR@/daemon.conf</file></p>
   </synopsis>
 
   <description>
     <p>The PulseAudio sound server reads configuration directives from
     a file <file>~/.pulse/daemon.conf</file> on startup and when that
     file doesn't exist from
-    <file>@pulseconfdir@/daemon.conf</file>. Please note that the
+    <file>@PA_DEFAULT_CONFIG_DIR@/daemon.conf</file>. Please note that the
     server also reads a configuration script on startup
     <file>default.pa</file> which also contains runtime configuration
     directives.</p>
@@ -262,8 +262,8 @@ USA.
       default script file. The default behaviour is to load
       <file>~/.pulse/default.pa</file>, and if that file does not
       exist fall back to the system wide installed version
-      <file>@pulseconfdir@/default.pa</file>. If run in system-wide
-      mode the file <file>@pulseconfdir@/system.pa</file> is used
+      <file>@PA_DEFAULT_CONFIG_DIR@/default.pa</file>. If run in system-wide
+      mode the file <file>@PA_DEFAULT_CONFIG_DIR@/system.pa</file> is used
       instead. If <opt>-n</opt> is passed on the command line
       or <opt>default-script-file=</opt> is disabled the default
       configuration script is ignored.</p>
@@ -414,6 +414,16 @@ USA.
       <p><opt>default-channel-map</opt> The default channel map.</p>
     </option>
 
+    <option>
+      <p><opt>alternate-sample-rate</opt> The alternate sample
+      frequency. Sinks and sources will use either the
+      default-rate-rate value or this alternate value, typically 44.1
+      or 48kHz. Switching between default and alternate values is
+      enabled only when the sinks/sources are suspended. This option
+      is ignored in passthrough mode where the stream rate will be used.
+      If set to zero, this feature is disabled.</p>
+    </option>
+
   </section>
 
   <section name="Default Fragment Settings">
@@ -438,7 +448,7 @@ USA.
 
   </section>
 
-  <section name="Default Sync Volume Settings">
+  <section name="Default Deferred Volume Settings">
 
     <p>With the flat volume feature enabled, the sink HW volume is set
     to the same level as the highest volume input stream. Any other streams
@@ -448,20 +458,20 @@ USA.
     cause the resulting output sound to be momentarily too loud or too soft.
     So to ensure SW and HW volumes are applied concurrently without any
     glitches, their application needs to be synchronized. The sink
-    implementation needs to support synchronized volumes. The following
+    implementation needs to support deferred volumes. The following
     parameters can be used to refine the process.</p>
 
     <option>
-      <p><opt>enable-sync-volume=</opt> Enable sync volume for the sinks that
+      <p><opt>enable-deferred-volume=</opt> Enable deferred volume for the sinks that
       support it. This feature is enabled by default.</p>
     </option>
     <option>
-      <p><opt>sync-volume-safety-margin-usec=</opt> The amount of time (in
+      <p><opt>deferred-volume-safety-margin-usec=</opt> The amount of time (in
       usec) by which the HW volume increases are delayed and HW volume
       decreases are advanced. Defaults to 8000 usec.</p>
     </option>
     <option>
-      <p><opt>sync-volume-extra-delay-usec=</opt> The amount of time (in usec)
+      <p><opt>deferred-volume-extra-delay-usec=</opt> The amount of time (in usec)
       by which HW volume changes are delayed. Negative values are also allowed.
       Defaults to 0.</p>
     </option>

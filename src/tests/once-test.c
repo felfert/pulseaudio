@@ -21,21 +21,23 @@
 #include <config.h>
 #endif
 
+#ifdef HAVE_PTHREAD
 #include <pthread.h>
+#endif
 
 #include <pulsecore/thread.h>
-#include <pulsecore/mutex.h>
 #include <pulsecore/once.h>
 #include <pulsecore/log.h>
 #include <pulsecore/core-util.h>
-#include <pulsecore/core-error.h>
 #include <pulsecore/atomic.h>
 #include <pulse/xmalloc.h>
 
 static pa_once once = PA_ONCE_INIT;
 static volatile unsigned n_run = 0;
 static const char * volatile ran_by = NULL;
+#ifdef HAVE_PTHREAD
 static pthread_barrier_t barrier;
+#endif
 static unsigned n_cpu;
 
 #define N_ITERATIONS 500
@@ -47,6 +49,7 @@ static void once_func(void) {
 }
 
 static void thread_func(void *data) {
+#ifdef HAVE_PTHREAD
     int r;
 
 #ifdef HAVE_PTHREAD_SETAFFINITY_NP
@@ -58,10 +61,11 @@ static void thread_func(void *data) {
     pa_assert_se(pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask) == 0);
 #endif
 
-    /* pa_log("started up: %s", data); */
+    pa_log_debug("started up: %s", (char *) data);
 
     r = pthread_barrier_wait(&barrier);
     pa_assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+#endif /* HAVE_PTHREAD */
 
     pa_run_once(&once, once_func);
 }
@@ -69,12 +73,17 @@ static void thread_func(void *data) {
 int main(int argc, char *argv[]) {
     unsigned n, i;
 
+    if (!getenv("MAKE_CHECK"))
+        pa_log_set_level(PA_LOG_DEBUG);
+
     n_cpu = pa_ncpus();
 
     for (n = 0; n < N_ITERATIONS; n++) {
         pa_thread* threads[N_THREADS];
 
+#ifdef HAVE_PTHREAD
         pa_assert_se(pthread_barrier_init(&barrier, NULL, N_THREADS) == 0);
+#endif
 
         /* Yes, kinda ugly */
         pa_zero(once);
@@ -86,7 +95,7 @@ int main(int argc, char *argv[]) {
             pa_thread_join(threads[i]);
 
         pa_assert(n_run == 1);
-        pa_log("ran by %s", ran_by);
+        pa_log_info("ran by %s", ran_by);
 
         for (i = 0; i < N_THREADS; i++) {
             pa_xfree(pa_thread_get_data(threads[i]));
@@ -96,7 +105,9 @@ int main(int argc, char *argv[]) {
         n_run = 0;
         ran_by = NULL;
 
+#ifdef HAVE_PTHREAD
         pa_assert_se(pthread_barrier_destroy(&barrier) == 0);
+#endif
     }
 
     return 0;

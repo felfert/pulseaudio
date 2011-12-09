@@ -24,13 +24,10 @@
 #endif
 
 #include <stdlib.h>
-#include <sys/stat.h>
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
-#include <fcntl.h>
 #include <unistd.h>
-#include <limits.h>
 
 #ifdef HAVE_NETINET_IN_H
 #include <netinet/in.h>
@@ -57,7 +54,6 @@
 #include <pulsecore/iochannel.h>
 #include <pulsecore/sink.h>
 #include <pulsecore/module.h>
-#include <pulsecore/core-rtclock.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/log.h>
@@ -381,7 +377,7 @@ static int do_write(struct userdata *u) {
 
         pa_make_tcp_socket_low_delay(u->fd);
 
-        if (getsockopt(u->fd, SOL_SOCKET, SO_SNDBUF, &so_sndbuf, &sl) < 0)
+        if (getsockopt(u->fd, SOL_SOCKET, SO_SNDBUF, (void *) &so_sndbuf, &sl) < 0)
             pa_log_warn("getsockopt(SO_SNDBUF) failed: %s", pa_cstrerror(errno));
         else {
             pa_log_debug("SO_SNDBUF is %zu.", (size_t) so_sndbuf);

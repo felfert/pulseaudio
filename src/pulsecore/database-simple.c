@@ -25,9 +25,7 @@
 #endif
 
 #include <errno.h>
-#include <sys/stat.h>
 #include <sys/types.h>
-#include <fcntl.h>
 #include <unistd.h>
 #include <stdio.h>
 
@@ -313,7 +311,7 @@ int pa_database_set(pa_database *database, const pa_datum *key, const pa_datum* 
             r = pa_hashmap_remove(db->map, key);
             pa_hashmap_put(db->map, &e->key, e);
         } else {
-            /* wont't overwrite, so clean new entry */
+            /* won't overwrite, so clean new entry */
             r = e;
             ret = -1;
         }

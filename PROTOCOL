@@ -241,3 +241,60 @@ One new field in reply from PA_COMMAND_GET_SINK_INPUT_INFO (and thus
 PA_COMMAND_GET_SINK_INPUT_INFO_LIST)
 
     format_info format
+
+## v22, implemented by >= 1.0
+
+New fields PA_COMMAND_CREATE_RECORD_STREAM:
+
+    uint8_t n_formats
+    format_info format1
+    ...
+    format_info formatn
+
+One new field in reply from PA_COMMAND_CREATE_RECORD_STREAM:
+
+    format_info format
+
+New fields in reply from PA_COMMAND_GET_SOURCE_INFO (and thus
+PA_COMMAND_GET_SOURCE_INFO_LIST)
+
+    uint8_t n_formats
+    format_info format1
+    ...
+    format_info formatn
+
+Five new fields in reply from PA_COMMAND_GET_SOURCE_OUTPUT_INFO (and thus
+PA_COMMAND_GET_SOURCE_OUTPUT_INFO_LIST)
+
+    format_info format
+    volume
+    bool mute
+    bool has_volume
+    bool volume_writable
+
+## v23, implemented by >= 1.0
+
+New field in PA_COMMAND_UNDERFLOW:
+
+    int64_t index
+
+## v24, implemented by >= 2.0
+
+New field in all commands that send/receive port introspection data
+(PA_COMMAND_GET_(SOURCE|SINK)_OUTPUT_INFO,
+PA_COMMAND_GET_(SOURCE|SINK)_OUTPUT_INFO_LIST):
+
+    uint32_t available
+
+The field is added once for every port.
+
+## v25, implemented by >= 2.0
+
+When port availability changes, send a subscription event for the
+owning card.
+
+#### If you just changed the protocol, read this
+## module-tunnel depends on the sink/source/sink-input/source-input protocol
+## internals, so if you changed these, you might have broken module-tunnel.
+## Don't forget to test module-tunnel-{source,sink} when pushing protocol
+## changes.

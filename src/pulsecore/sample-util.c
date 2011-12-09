@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
+#include <math.h>
 
 #include <pulse/timeval.h>
 
@@ -230,7 +231,7 @@ size_t pa_mix(
                     /* Multiplying the 32bit volume factor with the
                      * 16bit sample might result in an 48bit value. We
                      * want to do without 64 bit integers and hence do
-                     * the multiplication independantly for the HI and
+                     * the multiplication independently for the HI and
                      * LO part of the volume. */
 
                     hi = cv >> 16;
@@ -733,7 +734,7 @@ void pa_volume_memchunk(
 
     pa_assert(c);
     pa_assert(spec);
-    pa_assert(c->length % pa_frame_size(spec) == 0);
+    pa_assert(pa_frame_aligned(c->length, spec));
     pa_assert(volume);
 
     if (pa_memblock_is_silence(c->memblock))
@@ -747,8 +748,8 @@ void pa_volume_memchunk(
         return;
     }
 
-    if (spec->format < 0 || spec->format > PA_SAMPLE_MAX) {
-      pa_log_warn(" Unable to change volume of format %s.", pa_sample_format_to_string(spec->format));
+    if (spec->format < 0 || spec->format >= PA_SAMPLE_MAX) {
+      pa_log_warn("Unable to change volume of format");
       return;
     }
 

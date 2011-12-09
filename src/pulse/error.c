@@ -27,13 +27,10 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
-#include <pulse/xmalloc.h>
-#include <pulse/i18n.h>
+#include <pulse/def.h>
 
-#include <pulsecore/core-util.h>
-#include <pulsecore/native-common.h>
+#include <pulsecore/i18n.h>
 
 #include "error.h"
 

@@ -25,27 +25,25 @@
 #endif
 
 #include <sys/types.h>
-#include <limits.h>
 #include <asoundlib.h>
+#include <math.h>
 
 #ifdef HAVE_VALGRIND_MEMCHECK_H
 #include <valgrind/memcheck.h>
 #endif
 
+#include <pulse/mainloop-api.h>
 #include <pulse/sample.h>
-#include <pulse/xmalloc.h>
 #include <pulse/timeval.h>
 #include <pulse/util.h>
-#include <pulse/i18n.h>
+#include <pulse/volume.h>
+#include <pulse/xmalloc.h>
 #include <pulse/utf8.h>
 
+#include <pulsecore/i18n.h>
 #include <pulsecore/log.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/core-util.h>
-#include <pulsecore/atomic.h>
-#include <pulsecore/core-error.h>
-#include <pulsecore/once.h>
-#include <pulsecore/thread.h>
 #include <pulsecore/conf-parser.h>
 #include <pulsecore/strbuf.h>
 
@@ -273,7 +271,7 @@ static int rtpoll_work_cb(pa_rtpoll_item *i) {
     struct pollfd *p;
     unsigned n_fds;
     unsigned short revents = 0;
-    int err;
+    int err, ret = 0;
 
     pd = pa_rtpoll_item_get_userdata(i);
     pa_assert_fp(pd);
@@ -283,17 +281,42 @@ static int rtpoll_work_cb(pa_rtpoll_item *i) {
 
     if ((err = snd_mixer_poll_descriptors_revents(pd->mixer, p, n_fds, &revents)) < 0) {
         pa_log_error("Unable to get poll revent: %s", pa_alsa_strerror(err));
-        pa_rtpoll_item_free(i);
-        return -1;
+        ret = -1;
+        goto fail;
     }
 
     if (revents) {
-        snd_mixer_handle_events(pd->mixer);
-        pa_rtpoll_item_free(i);
-        pa_alsa_set_mixer_rtpoll(pd, pd->mixer, pd->rtpoll);
+        if (revents & (POLLNVAL | POLLERR)) {
+            pa_log_debug("Device disconnected, stopping poll on mixer");
+            goto fail;
+        } else if (revents & POLLERR) {
+            /* This shouldn't happen. */
+            pa_log_error("Got a POLLERR (revents = %04x), stopping poll on mixer", revents);
+            goto fail;
+        }
+
+        err = snd_mixer_handle_events(pd->mixer);
+
+        if (PA_LIKELY(err >= 0)) {
+            pa_rtpoll_item_free(i);
+            pa_alsa_set_mixer_rtpoll(pd, pd->mixer, pd->rtpoll);
+        } else {
+            pa_log_error("Error handling mixer event: %s", pa_alsa_strerror(err));
+            ret = -1;
+            goto fail;
+        }
     }
 
-    return 0;
+    return ret;
+
+fail:
+    pa_rtpoll_item_free(i);
+
+    pd->poll_item = NULL;
+    pd->rtpoll = NULL;
+    pd->mixer = NULL;
+
+    return ret;
 }
 
 int pa_alsa_set_mixer_rtpoll(struct pa_alsa_mixer_pdata *pd, snd_mixer_t *mixer, pa_rtpoll *rtp) {
@@ -849,7 +872,59 @@ static long decibel_fix_get_step(pa_alsa_decibel_fix *db_fix, long *db_value, in
     return i + db_fix->min_step;
 }
 
-static int element_set_volume(pa_alsa_element *e, snd_mixer_t *m, const pa_channel_map *cm, pa_cvolume *v, pa_bool_t write_to_hw) {
+/* Alsa lib documentation says for snd_mixer_selem_set_playback_dB() direction argument,
+ * that "-1 = accurate or first below, 0 = accurate, 1 = accurate or first above".
+ * But even with accurate nearest dB volume step is not selected, so that is why we need
+ * this function. Returns 0 and nearest selectable volume in *value_dB on success or
+ * negative error code if fails. */
+static int element_get_nearest_alsa_dB(snd_mixer_elem_t *me, snd_mixer_selem_channel_id_t c, pa_alsa_direction_t d, long *value_dB) {
+
+    long alsa_val;
+    long value_high;
+    long value_low;
+    int r = -1;
+
+    pa_assert(me);
+    pa_assert(value_dB);
+
+    if (d == PA_ALSA_DIRECTION_OUTPUT) {
+        if ((r = snd_mixer_selem_ask_playback_dB_vol(me, *value_dB, +1, &alsa_val)) >= 0)
+            r = snd_mixer_selem_ask_playback_vol_dB(me, alsa_val, &value_high);
+
+        if (r < 0)
+            return r;
+
+        if (value_high == *value_dB)
+            return r;
+
+        if ((r = snd_mixer_selem_ask_playback_dB_vol(me, *value_dB, -1, &alsa_val)) >= 0)
+            r = snd_mixer_selem_ask_playback_vol_dB(me, alsa_val, &value_low);
+    } else {
+        if ((r = snd_mixer_selem_ask_capture_dB_vol(me, *value_dB, +1, &alsa_val)) >= 0)
+            r = snd_mixer_selem_ask_capture_vol_dB(me, alsa_val, &value_high);
+
+        if (r < 0)
+            return r;
+
+        if (value_high == *value_dB)
+            return r;
+
+        if ((r = snd_mixer_selem_ask_capture_dB_vol(me, *value_dB, -1, &alsa_val)) >= 0)
+            r = snd_mixer_selem_ask_capture_vol_dB(me, alsa_val, &value_low);
+    }
+
+    if (r < 0)
+        return r;
+
+    if (labs(value_high - *value_dB) < labs(value_low - *value_dB))
+        *value_dB = value_high;
+    else
+        *value_dB = value_low;
+
+    return r;
+}
+
+static int element_set_volume(pa_alsa_element *e, snd_mixer_t *m, const pa_channel_map *cm, pa_cvolume *v, pa_bool_t deferred_volume, pa_bool_t write_to_hw) {
 
     snd_mixer_selem_id_t *sid;
     pa_cvolume rv;
@@ -893,7 +968,7 @@ static int element_set_volume(pa_alsa_element *e, snd_mixer_t *m, const pa_chann
 
         if (e->has_dB) {
             long value = to_alsa_dB(f);
-            int rounding = value > 0 ? -1 : +1;
+            int rounding;
 
             if (e->volume_limit >= 0 && value > (e->max_dB * 100))
                 value = e->max_dB * 100;
@@ -903,6 +978,7 @@ static int element_set_volume(pa_alsa_element *e, snd_mixer_t *m, const pa_chann
                  * if the channel is available, ALSA behaves very
                  * strangely and doesn't fail the call */
                 if (snd_mixer_selem_has_playback_channel(me, c)) {
+                    rounding = +1;
                     if (e->db_fix) {
                         if (write_to_hw)
                             r = snd_mixer_selem_set_playback_volume(me, c, decibel_fix_get_step(e->db_fix, &value, rounding));
@@ -913,8 +989,13 @@ static int element_set_volume(pa_alsa_element *e, snd_mixer_t *m, const pa_chann
 
                     } else {
                         if (write_to_hw) {
-                            if ((r = snd_mixer_selem_set_playback_dB(me, c, value, rounding)) >= 0)
-                                r = snd_mixer_selem_get_playback_dB(me, c, &value);
+                            if (deferred_volume) {
+                                if ((r = element_get_nearest_alsa_dB(me, c, PA_ALSA_DIRECTION_OUTPUT, &value)) >= 0)
+                                    r = snd_mixer_selem_set_playback_dB(me, c, value, 0);
+                            } else {
+                                if ((r = snd_mixer_selem_set_playback_dB(me, c, value, rounding)) >= 0)
+                                    r = snd_mixer_selem_get_playback_dB(me, c, &value);
+                           }
                         } else {
                             long alsa_val;
                             if ((r = snd_mixer_selem_ask_playback_dB_vol(me, value, rounding, &alsa_val)) >= 0)
@@ -925,6 +1006,7 @@ static int element_set_volume(pa_alsa_element *e, snd_mixer_t *m, const pa_chann
                     r = -1;
             } else {
                 if (snd_mixer_selem_has_capture_channel(me, c)) {
+                    rounding = -1;
                     if (e->db_fix) {
                         if (write_to_hw)
                             r = snd_mixer_selem_set_capture_volume(me, c, decibel_fix_get_step(e->db_fix, &value, rounding));
@@ -935,8 +1017,13 @@ static int element_set_volume(pa_alsa_element *e, snd_mixer_t *m, const pa_chann
 
                     } else {
                         if (write_to_hw) {
-                            if ((r = snd_mixer_selem_set_capture_dB(me, c, value, rounding)) >= 0)
-                                r = snd_mixer_selem_get_capture_dB(me, c, &value);
+                            if (deferred_volume) {
+                                if ((r = element_get_nearest_alsa_dB(me, c, PA_ALSA_DIRECTION_INPUT, &value)) >= 0)
+                                    r = snd_mixer_selem_set_capture_dB(me, c, value, 0);
+                            } else {
+                                if ((r = snd_mixer_selem_set_capture_dB(me, c, value, rounding)) >= 0)
+                                    r = snd_mixer_selem_get_capture_dB(me, c, &value);
+                            }
                         } else {
                             long alsa_val;
                             if ((r = snd_mixer_selem_ask_capture_dB_vol(me, value, rounding, &alsa_val)) >= 0)
@@ -997,7 +1084,7 @@ static int element_set_volume(pa_alsa_element *e, snd_mixer_t *m, const pa_chann
     return 0;
 }
 
-int pa_alsa_path_set_volume(pa_alsa_path *p, snd_mixer_t *m, const pa_channel_map *cm, pa_cvolume *v, pa_bool_t write_to_hw) {
+int pa_alsa_path_set_volume(pa_alsa_path *p, snd_mixer_t *m, const pa_channel_map *cm, pa_cvolume *v, pa_bool_t deferred_volume, pa_bool_t write_to_hw) {
 
     pa_alsa_element *e;
     pa_cvolume rv;
@@ -1023,7 +1110,7 @@ int pa_alsa_path_set_volume(pa_alsa_path *p, snd_mixer_t *m, const pa_channel_ma
         pa_assert(!p->has_dB || e->has_dB);
 
         ev = rv;
-        if (element_set_volume(e, m, cm, &ev, write_to_hw) < 0)
+        if (element_set_volume(e, m, cm, &ev, deferred_volume, write_to_hw) < 0)
             return -1;
 
         if (!p->has_dB) {
@@ -1113,7 +1200,7 @@ static int element_set_constant_volume(pa_alsa_element *e, snd_mixer_t *m) {
             if (e->db_fix) {
                 long dB = 0;
 
-                volume = decibel_fix_get_step(e->db_fix, &dB, +1);
+                volume = decibel_fix_get_step(e->db_fix, &dB, (e->direction == PA_ALSA_DIRECTION_OUTPUT ? +1 : -1));
                 volume_set = TRUE;
             }
             break;
@@ -1139,7 +1226,7 @@ static int element_set_constant_volume(pa_alsa_element *e, snd_mixer_t *m) {
         if (e->direction == PA_ALSA_DIRECTION_OUTPUT)
             r = snd_mixer_selem_set_playback_dB_all(me, 0, +1);
         else
-            r = snd_mixer_selem_set_capture_dB_all(me, 0, +1);
+            r = snd_mixer_selem_set_capture_dB_all(me, 0, -1);
     }
 
     if (r < 0)
@@ -2251,7 +2338,14 @@ static int path_verify(pa_alsa_path *p) {
     return 0;
 }
 
-pa_alsa_path* pa_alsa_path_new(const char *fname, pa_alsa_direction_t direction) {
+static const char *get_default_paths_dir(void) {
+    if (pa_run_from_build_tree())
+        return PA_BUILDDIR "/modules/alsa/mixer/paths/";
+    else
+        return PA_ALSA_PATHS_DIR;
+}
+
+pa_alsa_path* pa_alsa_path_new(const char *paths_dir, const char *fname, pa_alsa_direction_t direction) {
     pa_alsa_path *p;
     char *fn;
     int r;
@@ -2294,9 +2388,10 @@ pa_alsa_path* pa_alsa_path_new(const char *fname, pa_alsa_direction_t direction)
     items[1].data = &p->description;
     items[2].data = &p->name;
 
-    fn = pa_maybe_prefix_path(fname,
-                              pa_run_from_build_tree() ? PA_BUILDDIR "/modules/alsa/mixer/paths/" :
-                              PA_ALSA_PATHS_DIR);
+    if (!paths_dir)
+        paths_dir = get_default_paths_dir();
+
+    fn = pa_maybe_prefix_path(fname, paths_dir);
 
     r = pa_config_parse(fn, NULL, items, p);
     pa_xfree(fn);
@@ -2681,7 +2776,7 @@ void pa_alsa_path_set_set_callback(pa_alsa_path_set *ps, snd_mixer_t *m, snd_mix
         pa_alsa_path_set_callback(p, m, cb, userdata);
 }
 
-pa_alsa_path_set *pa_alsa_path_set_new(pa_alsa_mapping *m, pa_alsa_direction_t direction) {
+pa_alsa_path_set *pa_alsa_path_set_new(pa_alsa_mapping *m, pa_alsa_direction_t direction, const char *paths_dir) {
     pa_alsa_path_set *ps;
     char **pn = NULL, **en = NULL, **ie;
     pa_alsa_decibel_fix *db_fix;
@@ -2722,7 +2817,7 @@ pa_alsa_path_set *pa_alsa_path_set_new(pa_alsa_mapping *m, pa_alsa_direction_t d
 
             fn = pa_sprintf_malloc("%s.conf", *in);
 
-            if ((p = pa_alsa_path_new(fn, direction))) {
+            if ((p = pa_alsa_path_new(paths_dir, fn, direction))) {
                 p->path_set = ps;
                 PA_LLIST_INSERT_AFTER(pa_alsa_path, ps->paths, ps->last_path, p);
                 ps->last_path = p;
@@ -2811,45 +2906,194 @@ void pa_alsa_path_set_dump(pa_alsa_path_set *ps) {
         pa_alsa_path_dump(p);
 }
 
-static void path_set_unify(pa_alsa_path_set *ps) {
-    pa_alsa_path *p;
-    pa_bool_t has_dB = TRUE, has_volume = TRUE, has_mute = TRUE;
-    pa_assert(ps);
 
-    /* We have issues dealing with paths that vary too wildly. That
-     * means for now we have to have all paths support volume/mute/dB
-     * or none. */
+static pa_bool_t options_have_option(pa_alsa_option *options, const char *alsa_name) {
+    pa_alsa_option *o;
 
-    PA_LLIST_FOREACH(p, ps->paths) {
-        pa_assert(p->probed);
+    pa_assert(options);
+    pa_assert(alsa_name);
 
-        if (!p->has_volume)
-            has_volume = FALSE;
-        else if (!p->has_dB)
-            has_dB = FALSE;
+    PA_LLIST_FOREACH(o, options) {
+        if (pa_streq(o->alsa_name, alsa_name))
+            return TRUE;
+    }
+    return FALSE;
+}
 
-        if (!p->has_mute)
-            has_mute = FALSE;
+static pa_bool_t enumeration_is_subset(pa_alsa_option *a_options, pa_alsa_option *b_options) {
+    pa_alsa_option *oa, *ob;
+
+    if (!a_options) return TRUE;
+    if (!b_options) return FALSE;
+
+    /* If there is an option A offers that B does not, then A is not a subset of B. */
+    PA_LLIST_FOREACH(oa, a_options) {
+        pa_bool_t found = FALSE;
+        PA_LLIST_FOREACH(ob, b_options) {
+            if (pa_streq(oa->alsa_name, ob->alsa_name)) {
+                found = TRUE;
+                break;
+            }
+        }
+        if (!found)
+            return FALSE;
+    }
+    return TRUE;
+}
+
+/**
+ *  Compares two elements to see if a is a subset of b
+ */
+static pa_bool_t element_is_subset(pa_alsa_element *a, pa_alsa_element *b, snd_mixer_t *m) {
+    pa_assert(a);
+    pa_assert(b);
+    pa_assert(m);
+
+    /* General rules:
+     * Every state is a subset of itself (with caveats for volume_limits and options)
+     * IGNORE is a subset of every other state */
+
+    /* Check the volume_use */
+    if (a->volume_use != PA_ALSA_VOLUME_IGNORE) {
+
+        /* "Constant" is subset of "Constant" only when their constant values are equal */
+        if (a->volume_use == PA_ALSA_VOLUME_CONSTANT && b->volume_use == PA_ALSA_VOLUME_CONSTANT && a->constant_volume != b->constant_volume)
+            return FALSE;
+
+        /* Different volume uses when b is not "Merge" means we are definitely not a subset */
+        if (a->volume_use != b->volume_use && b->volume_use != PA_ALSA_VOLUME_MERGE)
+            return FALSE;
+
+        /* "Constant" is a subset of "Merge", if there is not a "volume-limit" in "Merge" below the actual constant.
+         * "Zero" and "Off" are just special cases of "Constant" when comparing to "Merge"
+         * "Merge" with a "volume-limit" is a subset of "Merge" without a "volume-limit" or with a higher "volume-limit" */
+        if (b->volume_use == PA_ALSA_VOLUME_MERGE && b->volume_limit >= 0) {
+            long a_limit;
+
+            if (a->volume_use == PA_ALSA_VOLUME_CONSTANT)
+                a_limit = a->constant_volume;
+            else if (a->volume_use == PA_ALSA_VOLUME_ZERO) {
+                long dB = 0;
+
+                if (a->db_fix) {
+                    int rounding = (a->direction == PA_ALSA_DIRECTION_OUTPUT ? +1 : -1);
+                    a_limit = decibel_fix_get_step(a->db_fix, &dB, rounding);
+                } else {
+                    snd_mixer_selem_id_t *sid;
+                    snd_mixer_elem_t *me;
+
+                    SELEM_INIT(sid, a->alsa_name);
+                    if (!(me = snd_mixer_find_selem(m, sid))) {
+                        pa_log_warn("Element %s seems to have disappeared.", a->alsa_name);
+                        return FALSE;
+                    }
+
+                    if (a->direction == PA_ALSA_DIRECTION_OUTPUT) {
+                        if (snd_mixer_selem_ask_playback_dB_vol(me, dB, +1, &a_limit) < 0)
+                            return FALSE;
+                    } else {
+                        if (snd_mixer_selem_ask_capture_dB_vol(me, dB, -1, &a_limit) < 0)
+                            return FALSE;
+                    }
+                }
+            } else if (a->volume_use == PA_ALSA_VOLUME_OFF)
+                a_limit = a->min_volume;
+            else if (a->volume_use == PA_ALSA_VOLUME_MERGE)
+                a_limit = a->volume_limit;
+            else
+                /* This should never be reached */
+                pa_assert(FALSE);
+
+            if (a_limit > b->volume_limit)
+                return FALSE;
+        }
     }
 
-    if (!has_volume || !has_dB || !has_mute) {
+    if (a->switch_use != PA_ALSA_SWITCH_IGNORE) {
+        /* "On" is a subset of "Mute".
+         * "Off" is a subset of "Mute".
+         * "On" is a subset of "Select", if there is an "Option:On" in B.
+         * "Off" is a subset of "Select", if there is an "Option:Off" in B.
+         * "Select" is a subset of "Select", if they have the same options (is this always true?). */
 
-        if (!has_volume)
-            pa_log_debug("Some paths of the device lack hardware volume control, disabling hardware control altogether.");
-        else if (!has_dB)
-            pa_log_debug("Some paths of the device lack dB information, disabling dB logic altogether.");
+        if (a->switch_use != b->switch_use) {
 
-        if (!has_mute)
-            pa_log_debug("Some paths of the device lack hardware mute control, disabling hardware control altogether.");
+            if (a->switch_use == PA_ALSA_SWITCH_SELECT || a->switch_use == PA_ALSA_SWITCH_MUTE
+                || b->switch_use == PA_ALSA_SWITCH_OFF || b->switch_use == PA_ALSA_SWITCH_ON)
+                return FALSE;
 
-        PA_LLIST_FOREACH(p, ps->paths) {
-            if (!has_volume)
-                p->has_volume = FALSE;
-            else if (!has_dB)
-                p->has_dB = FALSE;
+            if (b->switch_use == PA_ALSA_SWITCH_SELECT) {
+                if (a->switch_use == PA_ALSA_SWITCH_ON) {
+                    if (!options_have_option(b->options, "on"))
+                        return FALSE;
+                } else if (a->switch_use == PA_ALSA_SWITCH_OFF) {
+                    if (!options_have_option(b->options, "off"))
+                        return FALSE;
+                }
+            }
+        } else if (a->switch_use == PA_ALSA_SWITCH_SELECT) {
+            if (!enumeration_is_subset(a->options, b->options))
+                return FALSE;
+        }
+    }
 
-            if (!has_mute)
-                p->has_mute = FALSE;
+    if (a->enumeration_use != PA_ALSA_ENUMERATION_IGNORE) {
+        if (b->enumeration_use == PA_ALSA_ENUMERATION_IGNORE)
+            return FALSE;
+        if (!enumeration_is_subset(a->options, b->options))
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
+static void path_set_condense(pa_alsa_path_set *ps, snd_mixer_t *m) {
+    pa_alsa_path *p, *np;
+
+    pa_assert(ps);
+    pa_assert(m);
+
+    /* If we only have one path, then don't bother */
+    if (!ps->paths || !ps->paths->next)
+        return;
+
+    for (p = ps->paths; p; p = np) {
+        pa_alsa_path *p2;
+        np = p->next;
+
+        PA_LLIST_FOREACH(p2, ps->paths) {
+            pa_alsa_element *ea, *eb;
+            pa_bool_t is_subset = TRUE;
+
+            if (p == p2)
+                continue;
+
+            /* Compare the elements of each set... */
+            pa_assert_se(ea = p->elements);
+            pa_assert_se(eb = p2->elements);
+
+            while (is_subset) {
+                if (pa_streq(ea->alsa_name, eb->alsa_name)) {
+                    if (element_is_subset(ea, eb, m)) {
+                        ea = ea->next;
+                        eb = eb->next;
+                        if ((ea && !eb) || (!ea && eb))
+                            is_subset = FALSE;
+                        else if (!ea && !eb)
+                            break;
+                    } else
+                        is_subset = FALSE;
+
+                } else
+                    is_subset = FALSE;
+            }
+
+            if (is_subset) {
+                pa_log_debug("Removing path '%s' as it is a subset of '%s'.", p->name, p2->name);
+                PA_LLIST_REMOVE(pa_alsa_path, ps->paths, p);
+                pa_alsa_path_free(p);
+                break;
+            }
         }
     }
 }
@@ -2909,9 +3153,15 @@ void pa_alsa_path_set_probe(pa_alsa_path_set *ps, snd_mixer_t *m, pa_bool_t igno
         }
     }
 
-    path_set_unify(ps);
+    pa_log_debug("Found mixer paths (before tidying):");
+    pa_alsa_path_set_dump(ps);
+
+    path_set_condense(ps, m);
     path_set_make_paths_unique(ps);
     ps->probed = TRUE;
+
+    pa_log_debug("Available mixer paths (after tidying):");
+    pa_alsa_path_set_dump(ps);
 }
 
 static void mapping_free(pa_alsa_mapping *m) {
@@ -3609,7 +3859,7 @@ static int profile_verify(pa_alsa_profile *p) {
                 continue;
 
             if (!(m = pa_hashmap_get(p->profile_set->mappings, *name)) || m->direction == PA_ALSA_DIRECTION_INPUT) {
-                pa_log("Profile '%s' refers to unexistant mapping '%s'.", p->name, *name);
+                pa_log("Profile '%s' refers to nonexistent mapping '%s'.", p->name, *name);
                 return -1;
             }
 
@@ -3645,7 +3895,7 @@ static int profile_verify(pa_alsa_profile *p) {
                 continue;
 
             if (!(m = pa_hashmap_get(p->profile_set->mappings, *name)) || m->direction == PA_ALSA_DIRECTION_OUTPUT) {
-                pa_log("Profile '%s' refers to unexistant mapping '%s'.", p->name, *name);
+                pa_log("Profile '%s' refers to nonexistent mapping '%s'.", p->name, *name);
                 return -1;
             }
 
@@ -4036,9 +4286,10 @@ void pa_alsa_profile_set_dump(pa_alsa_profile_set *ps) {
         pa_alsa_decibel_fix_dump(db_fix);
 }
 
-void pa_alsa_add_ports(pa_hashmap **p, pa_alsa_path_set *ps) {
+void pa_alsa_add_ports(pa_core *c, pa_hashmap **p, pa_alsa_path_set *ps) {
     pa_alsa_path *path;
 
+    pa_assert(c);
     pa_assert(p);
     pa_assert(!*p);
     pa_assert(ps);
@@ -4063,7 +4314,7 @@ void pa_alsa_add_ports(pa_hashmap **p, pa_alsa_path_set *ps) {
             pa_device_port *port;
             pa_alsa_port_data *data;
 
-            port = pa_device_port_new(s->name, s->description, sizeof(pa_alsa_port_data));
+            port = pa_device_port_new(c, s->name, s->description, sizeof(pa_alsa_port_data));
             port->priority = s->priority;
 
             data = PA_DEVICE_PORT_DATA(port);
@@ -4088,7 +4339,7 @@ void pa_alsa_add_ports(pa_hashmap **p, pa_alsa_path_set *ps) {
                 /* If there is no or just one setting we only need a
                  * single entry */
 
-                port = pa_device_port_new(path->name, path->description, sizeof(pa_alsa_port_data));
+                port = pa_device_port_new(c, path->name, path->description, sizeof(pa_alsa_port_data));
                 port->priority = path->priority * 100;
 
 
@@ -4112,7 +4363,7 @@ void pa_alsa_add_ports(pa_hashmap **p, pa_alsa_path_set *ps) {
                     else
                         d = pa_xstrdup(path->description);
 
-                    port = pa_device_port_new(n, d, sizeof(pa_alsa_port_data));
+                    port = pa_device_port_new(c, n, d, sizeof(pa_alsa_port_data));
                     port->priority = path->priority * 100 + s->priority;
 
                     pa_xfree(n);

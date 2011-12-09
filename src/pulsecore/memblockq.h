@@ -40,6 +40,8 @@ typedef struct pa_memblockq pa_memblockq;
 
 /* Parameters:
 
+   - name:      name for debugging purposes
+
    - idx:       start value for both read and write index
 
    - maxlength: maximum length of queue. If more data is pushed into
@@ -47,9 +49,9 @@ typedef struct pa_memblockq pa_memblockq;
 
    - tlength:   the target length of the queue. Pass 0 for the default.
 
-   - base:      a base value for all metrics. Only multiples of this value
-                are popped from the queue or should be pushed into
-                it. Must not be 0.
+   - ss:        Sample spec describing the queue contents. Only multiples
+                of the frame size as implied by the sample spec are
+                popped from the queue or should be pushed into it.
 
    - prebuf:    If the queue runs empty wait until this many bytes are in
                 queue again before passing the first byte out. If set
@@ -62,13 +64,14 @@ typedef struct pa_memblockq pa_memblockq;
 
    - maxrewind: how many bytes of history to keep in the queue
 
-   - silence:   return this memchunk when reading unitialized data
+   - silence:   return this memchunk when reading uninitialized data
 */
 pa_memblockq* pa_memblockq_new(
+        const char *name,
         int64_t idx,
         size_t maxlength,
         size_t tlength,
-        size_t base,
+        const pa_sample_spec *sample_spec,
         size_t prebuf,
         size_t minreq,
         size_t maxrewind,

@@ -23,8 +23,9 @@
 #include <config.h>
 #endif
 
+#include <pulse/xmalloc.h>
+
 #include <pulsecore/macro.h>
-#include <pulsecore/hashmap.h>
 #include <pulsecore/hook-list.h>
 #include <pulsecore/core.h>
 #include <pulsecore/core-util.h>
@@ -54,29 +55,8 @@ struct userdata {
         *source_output_move_finish_slot;
 };
 
-static pa_bool_t role_match(pa_proplist *proplist, const char *role) {
-    const char *ir;
-    char *r;
-    const char *state = NULL;
-
-    if (!(ir = pa_proplist_gets(proplist, PA_PROP_DEVICE_INTENDED_ROLES)))
-        return FALSE;
-
-    while ((r = pa_split_spaces(ir, &state))) {
-
-        if (pa_streq(role, r)) {
-            pa_xfree(r);
-            return TRUE;
-        }
-
-        pa_xfree(r);
-    }
-
-    return FALSE;
-}
-
 static pa_hook_result_t process(struct userdata *u, pa_object *o, pa_bool_t is_sink_input) {
-    const char *want, *stream_role;
+    const char *want;
     pa_proplist *pl, *parent_pl;
 
     if (is_sink_input) {
@@ -91,15 +71,8 @@ static pa_hook_result_t process(struct userdata *u, pa_object *o, pa_bool_t is_s
     if (!pa_proplist_gets(pl, PA_PROP_FILTER_HEURISTICS) && pa_proplist_gets(pl, PA_PROP_FILTER_APPLY))
         return PA_HOOK_OK;
 
-    want = pa_proplist_gets(pl, PA_PROP_FILTER_WANT);
-    if (!want) {
-        /* This is a phone stream, maybe we want echo cancellation */
-        if ((stream_role = pa_proplist_gets(pl, PA_PROP_MEDIA_ROLE)) && pa_streq(stream_role, "phone"))
-            want = "echo-cancel";
-    }
-
     /* On phone sinks, make sure we're not applying echo cancellation */
-    if (role_match(parent_pl, "phone")) {
+    if (pa_str_in_list_spaces(pa_proplist_gets(parent_pl, PA_PROP_DEVICE_INTENDED_ROLES), "phone")) {
         const char *apply = pa_proplist_gets(pl, PA_PROP_FILTER_APPLY);
 
         if (apply && pa_streq(apply, "echo-cancel")) {
@@ -109,6 +82,8 @@ static pa_hook_result_t process(struct userdata *u, pa_object *o, pa_bool_t is_s
 
         return PA_HOOK_OK;
     }
+
+    want = pa_proplist_gets(pl, PA_PROP_FILTER_WANT);
 
     if (want) {
         /* There's a filter that we want, ask module-filter-apply to apply it, and remember that we're managing filter.apply */

@@ -27,9 +27,9 @@
 
 #include <errno.h>
 
-#include <pulsecore/core-util.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/socket.h>
+#include <pulsecore/core-util.h>
 
 #include "arpa-inet.h"
 

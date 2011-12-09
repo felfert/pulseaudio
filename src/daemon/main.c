@@ -33,7 +33,6 @@
 #include <stddef.h>
 #include <ltdl.h>
 #include <limits.h>
-#include <fcntl.h>
 #include <unistd.h>
 #include <locale.h>
 #include <sys/types.h>
@@ -67,14 +66,14 @@
 #include <pulse/mainloop-signal.h>
 #include <pulse/timeval.h>
 #include <pulse/xmalloc.h>
-#include <pulse/i18n.h>
 
+#include <pulsecore/i18n.h>
 #include <pulsecore/lock-autospawn.h>
 #include <pulsecore/socket.h>
 #include <pulsecore/core-error.h>
 #include <pulsecore/core-rtclock.h>
+#include <pulsecore/core-scache.h>
 #include <pulsecore/core.h>
-#include <pulsecore/memblock.h>
 #include <pulsecore/module.h>
 #include <pulsecore/cli-command.h>
 #include <pulsecore/log.h>
@@ -82,12 +81,8 @@
 #include <pulsecore/sioman.h>
 #include <pulsecore/cli-text.h>
 #include <pulsecore/pid.h>
-#include <pulsecore/namereg.h>
 #include <pulsecore/random.h>
 #include <pulsecore/macro.h>
-#include <pulsecore/mutex.h>
-#include <pulsecore/thread.h>
-#include <pulsecore/once.h>
 #include <pulsecore/shm.h>
 #include <pulsecore/memtrap.h>
 #include <pulsecore/strlist.h>
@@ -383,7 +378,7 @@ static pa_dbus_connection *register_dbus_name(pa_core *c, DBusBusType bus, const
     if (dbus_error_is_set(&error))
         pa_log_error("Failed to acquire %s: %s: %s", name, error.name, error.message);
     else
-        pa_log_error("D-Bus name %s already taken. Weird shit!", name);
+        pa_log_error("D-Bus name %s already taken.", name);
 
     /* PA cannot be started twice by the same user and hence we can
      * ignore mostly the case that a name is already taken. */
@@ -754,7 +749,9 @@ int main(int argc, char *argv[]) {
     }
 
     if (conf->daemonize) {
+#ifdef HAVE_FORK
         pid_t child;
+#endif
 
         if (pa_stdio_acquire() < 0) {
             pa_log(_("Failed to acquire stdio."));
@@ -1021,11 +1018,12 @@ int main(int argc, char *argv[]) {
     }
 
     c->default_sample_spec = conf->default_sample_spec;
+    c->alternate_sample_rate = conf->alternate_sample_rate;
     c->default_channel_map = conf->default_channel_map;
     c->default_n_fragments = conf->default_n_fragments;
     c->default_fragment_size_msec = conf->default_fragment_size_msec;
-    c->sync_volume_safety_margin_usec = conf->sync_volume_safety_margin_usec;
-    c->sync_volume_extra_delay_usec = conf->sync_volume_extra_delay_usec;
+    c->deferred_volume_safety_margin_usec = conf->deferred_volume_safety_margin_usec;
+    c->deferred_volume_extra_delay_usec = conf->deferred_volume_extra_delay_usec;
     c->exit_idle_time = conf->exit_idle_time;
     c->scache_idle_time = conf->scache_idle_time;
     c->resample_method = conf->resample_method;
@@ -1033,7 +1031,7 @@ int main(int argc, char *argv[]) {
     c->realtime_scheduling = !!conf->realtime_scheduling;
     c->disable_remixing = !!conf->disable_remixing;
     c->disable_lfe_remixing = !!conf->disable_lfe_remixing;
-    c->sync_volume = !!conf->sync_volume;
+    c->deferred_volume = !!conf->deferred_volume;
     c->running_as_daemon = !!conf->daemonize;
     c->disallow_exit = conf->disallow_exit;
     c->flat_volumes = conf->flat_volumes;
@@ -1115,14 +1113,14 @@ int main(int argc, char *argv[]) {
 
 #ifdef HAVE_DBUS
     if (!conf->system_instance) {
-        if (!(server_lookup = pa_dbusobj_server_lookup_new(c)))
-            goto finish;
-        if (!(lookup_service_bus = register_dbus_name(c, DBUS_BUS_SESSION, "org.PulseAudio1")))
-            goto finish;
+        if ((server_lookup = pa_dbusobj_server_lookup_new(c))) {
+            if (!(lookup_service_bus = register_dbus_name(c, DBUS_BUS_SESSION, "org.PulseAudio1")))
+                goto finish;
+        }
     }
 
-    if (start_server && !(server_bus = register_dbus_name(c, conf->system_instance ? DBUS_BUS_SYSTEM : DBUS_BUS_SESSION, "org.pulseaudio.Server")))
-        goto finish;
+    if (start_server)
+        server_bus = register_dbus_name(c, conf->system_instance ? DBUS_BUS_SYSTEM : DBUS_BUS_SESSION, "org.pulseaudio.Server");
 #endif
 
 #ifdef HAVE_FORK
@@ -1165,6 +1163,11 @@ finish:
 #endif
 
     if (c) {
+        /* Ensure all the modules/samples are unloaded when the core is still ref'ed,
+         * as unlink callback hooks in modules may need the core to be ref'ed */
+        pa_module_unload_all(c);
+        pa_scache_free_all(c);
+
         pa_core_unref(c);
         pa_log_info(_("Daemon terminated."));
     }

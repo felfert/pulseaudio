@@ -25,10 +25,8 @@
 #endif
 
 #include <stdio.h>
-#include <signal.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <string.h>
 #include <fcntl.h>
 #include <errno.h>
 
@@ -36,7 +34,6 @@
 #include <pulsecore/pipe.h>
 #endif
 
-#include <pulse/i18n.h>
 #include <pulse/rtclock.h>
 #include <pulse/timeval.h>
 #include <pulse/xmalloc.h>
@@ -44,6 +41,7 @@
 #include <pulsecore/poll.h>
 #include <pulsecore/core-rtclock.h>
 #include <pulsecore/core-util.h>
+#include <pulsecore/i18n.h>
 #include <pulsecore/llist.h>
 #include <pulsecore/log.h>
 #include <pulsecore/core-error.h>
@@ -188,9 +186,7 @@ static pa_io_event* mainloop_io_new(
         FD_ZERO (&xset);
         FD_SET (fd, &xset);
 
-        if ((select((SELECT_TYPE_ARG1) fd, NULL, NULL, SELECT_TYPE_ARG234 &xset,
-                    SELECT_TYPE_ARG5 &tv) == -1) &&
-             (WSAGetLastError() == WSAENOTSOCK)) {
+        if ((select(fd, NULL, NULL, &xset, &tv) == -1) && (WSAGetLastError() == WSAENOTSOCK)) {
             pa_log_warn("Cannot monitor non-socket file descriptors.");
             e->dead = TRUE;
         }

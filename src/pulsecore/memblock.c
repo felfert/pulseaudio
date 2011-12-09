@@ -42,7 +42,10 @@
 #include <pulsecore/log.h>
 #include <pulsecore/hashmap.h>
 #include <pulsecore/semaphore.h>
+#include <pulsecore/mutex.h>
 #include <pulsecore/macro.h>
+#include <pulsecore/refcnt.h>
+#include <pulsecore/llist.h>
 #include <pulsecore/flist.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/memtrap.h>
@@ -226,7 +229,7 @@ static pa_memblock *memblock_new_appended(pa_mempool *p, size_t length) {
     /* If -1 is passed as length we choose the size for the caller. */
 
     if (length == (size_t) -1)
-        length = p->block_size - PA_ALIGN(sizeof(pa_memblock));
+        length = pa_mempool_block_size_max(p);
 
     b = pa_xmalloc(PA_ALIGN(sizeof(pa_memblock)) + length);
     PA_REFCNT_INIT(b);
@@ -708,9 +711,6 @@ pa_mempool* pa_mempool_new(pa_bool_t shared, size_t size) {
 
     p = pa_xnew(pa_mempool, 1);
 
-    p->mutex = pa_mutex_new(TRUE, TRUE);
-    p->semaphore = pa_semaphore_new(0);
-
     p->block_size = PA_PAGE_ALIGN(PA_MEMPOOL_SLOT_SIZE);
     if (p->block_size < PA_PAGE_SIZE)
         p->block_size = PA_PAGE_SIZE;
@@ -741,6 +741,9 @@ pa_mempool* pa_mempool_new(pa_bool_t shared, size_t size) {
 
     PA_LLIST_HEAD_INIT(pa_memimport, p->imports);
     PA_LLIST_HEAD_INIT(pa_memexport, p->exports);
+
+    p->mutex = pa_mutex_new(TRUE, TRUE);
+    p->semaphore = pa_semaphore_new(0);
 
     p->free_slots = pa_flist_new(p->n_blocks);
 
@@ -870,7 +873,7 @@ pa_bool_t pa_mempool_is_shared(pa_mempool *p) {
     return !!p->memory.shared;
 }
 
-/* For recieving blocks from other nodes */
+/* For receiving blocks from other nodes */
 pa_memimport* pa_memimport_new(pa_mempool *p, pa_memimport_release_cb_t cb, void *userdata) {
     pa_memimport *i;
 

@@ -26,18 +26,17 @@
 #include <config.h>
 #endif
 
-#include <pulse/xmalloc.h>
-#include <pulse/i18n.h>
+#include <math.h>
 
-#include <pulsecore/core-error.h>
+#include <pulse/xmalloc.h>
+
+#include <pulsecore/i18n.h>
 #include <pulsecore/namereg.h>
 #include <pulsecore/sink.h>
 #include <pulsecore/module.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/log.h>
-#include <pulsecore/thread.h>
-#include <pulsecore/thread-mq.h>
 #include <pulsecore/rtpoll.h>
 #include <pulsecore/sample-util.h>
 #include <pulsecore/ltdl-helper.h>
@@ -59,7 +58,7 @@ PA_MODULE_USAGE(
       "channel_map=<input channel map> "
       "plugin=<ladspa plugin name> "
       "label=<ladspa plugin label> "
-      "control=<comma seperated list of input control values> "
+      "control=<comma separated list of input control values> "
       "input_ladspaport_map=<comma separated list of input LADSPA port names> "
       "output_ladspaport_map=<comma separated list of output LADSPA port names> "));
 
@@ -530,7 +529,7 @@ int pa__init(pa_module*m) {
     u = pa_xnew0(struct userdata, 1);
     u->module = m;
     m->userdata = u;
-    u->memblockq = pa_memblockq_new(0, MEMBLOCKQ_MAXLENGTH, 0, pa_frame_size(&ss), 1, 1, 0, NULL);
+    u->memblockq = pa_memblockq_new("module-ladspa-sink memblockq", 0, MEMBLOCKQ_MAXLENGTH, 0, &ss, 1, 1, 0, NULL);
     u->max_ladspaport_count = 1; /*to avoid division by zero etc. in pa__done when failing before this value has been set*/
     u->channels = 0;
     u->input = NULL;
@@ -884,7 +883,6 @@ int pa__init(pa_module*m) {
     }
 
     u->sink = pa_sink_new(m->core, &sink_data,
-                          PA_SINK_HW_MUTE_CTRL|PA_SINK_HW_VOLUME_CTRL|PA_SINK_DECIBEL_VOLUME|
                           (master->flags & (PA_SINK_LATENCY|PA_SINK_DYNAMIC_LATENCY)));
     pa_sink_new_data_done(&sink_data);
 
@@ -897,8 +895,9 @@ int pa__init(pa_module*m) {
     u->sink->set_state = sink_set_state_cb;
     u->sink->update_requested_latency = sink_update_requested_latency_cb;
     u->sink->request_rewind = sink_request_rewind_cb;
-    u->sink->set_volume = sink_set_volume_cb;
-    u->sink->set_mute = sink_set_mute_cb;
+    pa_sink_enable_decibel_volume(u->sink, TRUE);
+    pa_sink_set_set_volume_callback(u->sink, sink_set_volume_cb);
+    pa_sink_set_set_mute_callback(u->sink, sink_set_mute_cb);
     u->sink->userdata = u;
 
     pa_sink_set_asyncmsgq(u->sink, master->asyncmsgq);

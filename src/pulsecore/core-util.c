@@ -219,7 +219,7 @@ void pa_make_fd_cloexec(int fd) {
 /** Creates a directory securely */
 int pa_make_secure_dir(const char* dir, mode_t m, uid_t uid, gid_t gid) {
     struct stat st;
-    int r, saved_errno, fd;
+    int r, saved_errno;
 
     pa_assert(dir);
 
@@ -238,6 +238,8 @@ int pa_make_secure_dir(const char* dir, mode_t m, uid_t uid, gid_t gid) {
         return -1;
 
 #if defined(HAVE_FSTAT) && !defined(OS_IS_WIN32)
+{
+    int fd;
     if ((fd = open(dir,
 #ifdef O_CLOEXEC
                    O_CLOEXEC|
@@ -276,6 +278,7 @@ int pa_make_secure_dir(const char* dir, mode_t m, uid_t uid, gid_t gid) {
 #endif
 
     pa_assert_se(pa_close(fd) >= 0);
+}
 #endif
 
 #ifdef HAVE_LSTAT
@@ -728,7 +731,7 @@ int pa_make_realtime(int rtprio) {
     pa_log_info("Successfully acquired real-time thread priority.");
     return 0;
 
-#elif _POSIX_PRIORITY_SCHEDULING
+#elif defined(_POSIX_PRIORITY_SCHEDULING)
     int p;
 
     if (set_scheduler(rtprio) >= 0) {
@@ -886,17 +889,18 @@ int pa_match(const char *expr, const char *v) {
 
 /* Try to parse a boolean string value.*/
 int pa_parse_boolean(const char *v) {
-    const char *expr;
     pa_assert(v);
 
-    /* First we check language independant */
+    /* First we check language independent */
     if (!strcmp(v, "1") || v[0] == 'y' || v[0] == 'Y' || v[0] == 't' || v[0] == 'T' || !strcasecmp(v, "on"))
         return 1;
     else if (!strcmp(v, "0") || v[0] == 'n' || v[0] == 'N' || v[0] == 'f' || v[0] == 'F' || !strcasecmp(v, "off"))
         return 0;
 
 #ifdef HAVE_LANGINFO_H
-    /* And then we check language dependant */
+{
+    const char *expr;
+    /* And then we check language dependent */
     if ((expr = nl_langinfo(YESEXPR)))
         if (expr[0])
             if (pa_match(expr, v) > 0)
@@ -906,6 +910,7 @@ int pa_parse_boolean(const char *v) {
         if (expr[0])
             if (pa_match(expr, v) > 0)
                 return 0;
+}
 #endif
 
     errno = EINVAL;
@@ -915,7 +920,7 @@ int pa_parse_boolean(const char *v) {
 /* Split the specified string wherever one of the strings in delimiter
  * occurs. Each time it is called returns a newly allocated string
  * with pa_xmalloc(). The variable state points to, should be
- * initiallized to NULL before the first call. */
+ * initialized to NULL before the first call. */
 char *pa_split(const char *c, const char *delimiter, const char**state) {
     const char *current = *state ? *state : c;
     size_t l;
@@ -1145,7 +1150,7 @@ finish:
     return r;
 }
 
-/* Check whether the specifc user id is a member of the specified group */
+/* Check whether the specific user id is a member of the specified group */
 int pa_uid_in_group(uid_t uid, const char *name) {
     struct group *group = NULL;
     char **i;
@@ -1181,7 +1186,7 @@ finish:
     return r;
 }
 
-/* Get the GID of a gfiven group, return (gid_t) -1 on failure. */
+/* Get the GID of a given group, return (gid_t) -1 on failure. */
 gid_t pa_get_gid_of_group(const char *name) {
     gid_t ret = (gid_t) -1;
     struct group *gr = NULL;
@@ -1255,7 +1260,7 @@ int pa_lock_fd(int fd, int b) {
     if (fcntl(fd, F_SETLKW, &f_lock) >= 0)
         return 0;
 
-    /* Perhaps the file descriptor qas opened for read only, than try again with a read lock. */
+    /* Perhaps the file descriptor was opened for read only, than try again with a read lock. */
     if (b && errno == EBADF) {
         f_lock.l_type = F_RDLCK;
         if (fcntl(fd, F_SETLKW, &f_lock) >= 0)
@@ -1366,7 +1371,7 @@ fail:
     return -1;
 }
 
-/* Unlock a temporary lcok file */
+/* Unlock a temporary lock file */
 int pa_unlock_lockfile(const char *fn, int fd) {
     int r = 0;
     pa_assert(fd >= 0);
@@ -1561,11 +1566,10 @@ static int make_random_dir_and_link(mode_t m, const char *k) {
 
 char *pa_get_runtime_dir(void) {
     char *d, *k = NULL, *p = NULL, *t = NULL, *mid;
-    struct stat st;
     mode_t m;
 
     /* The runtime directory shall contain dynamic data that needs NOT
-     * to be kept accross reboots and is usuallly private to the user,
+     * to be kept across reboots and is usually private to the user,
      * except in system mode, where it might be accessible by other
      * users, too. Since we need POSIX locking and UNIX sockets in
      * this directory, we link it to a random subdir in /tmp, if it
@@ -1602,8 +1606,7 @@ char *pa_get_runtime_dir(void) {
     pa_xfree(mid);
 
     for (;;) {
-        /* OK, first let's check if the "runtime" symlink is already
-         * existant */
+        /* OK, first let's check if the "runtime" symlink already exists */
 
         if (!(p = pa_readlink(k))) {
 
@@ -1641,10 +1644,10 @@ char *pa_get_runtime_dir(void) {
             goto fail;
         }
 
-        /* Hmm, so this symlink is still around, make sure nobody fools
-         * us */
-
+        /* Hmm, so this symlink is still around, make sure nobody fools us */
 #ifdef HAVE_LSTAT
+{
+        struct stat st;
         if (lstat(p, &st) < 0) {
 
             if (errno != ENOENT) {
@@ -1664,6 +1667,7 @@ char *pa_get_runtime_dir(void) {
 
             pa_log_info("Hmm, runtime path exists, but points to an invalid directory. Changing runtime directory.");
         }
+}
 #endif
 
         pa_xfree(p);
@@ -1686,7 +1690,7 @@ char *pa_get_runtime_dir(void) {
             pa_xfree(t);
             t = NULL;
 
-            /* Hmm, someone lese was quicker then us. Let's give
+            /* Hmm, someone else was quicker then us. Let's give
              * him some time to finish, and retry. */
             pa_msleep(10);
             continue;
@@ -2203,7 +2207,7 @@ void *pa_will_need(const void *p, size_t l) {
 #endif
     const void *a;
     size_t size;
-    int r;
+    int r = ENOTSUP;
     size_t bs;
 
     pa_assert(p);
@@ -2623,6 +2627,26 @@ pa_bool_t pa_in_system_mode(void) {
     return !!atoi(e);
 }
 
+/* Checks a whitespace-separated list of words in haystack for needle */
+pa_bool_t pa_str_in_list_spaces(const char *haystack, const char *needle) {
+    char *s;
+    const char *state = NULL;
+
+    if (!haystack || !needle)
+        return FALSE;
+
+    while ((s = pa_split_spaces(haystack, &state))) {
+        if (pa_streq(needle, s)) {
+            pa_xfree(s);
+            return TRUE;
+        }
+
+        pa_xfree(s);
+    }
+
+    return FALSE;
+}
+
 char *pa_get_user_name_malloc(void) {
     ssize_t k;
     char *u;
@@ -2693,7 +2717,8 @@ char *pa_machine_id(void) {
      * since it fits perfectly our needs and is not as volatile as the
      * hostname which might be set from dhcp. */
 
-    if ((f = pa_fopen_cloexec(PA_MACHINE_ID, "r"))) {
+    if ((f = pa_fopen_cloexec(PA_MACHINE_ID, "r")) ||
+        (f = pa_fopen_cloexec(PA_MACHINE_ID_FALLBACK, "r"))) {
         char ln[34] = "", *r;
 
         r = fgets(ln, sizeof(ln)-1, f);
@@ -2868,7 +2893,7 @@ char *pa_realpath(const char *path) {
     char *t;
     pa_assert(path);
 
-    /* We want only abolsute paths */
+    /* We want only absolute paths */
     if (path[0] != '/') {
         errno = EINVAL;
         return NULL;

@@ -645,7 +645,7 @@ static void calc_map_table(pa_resampler *r) {
              * volume will not match, and the two channels will be a
              * linear combination of both.
              *
-             * This is losely based on random suggestions found on the
+             * This is loosely based on random suggestions found on the
              * Internet, such as this:
              * http://www.halfgaar.net/surround-sound-in-linux and the
              * alsa upmix plugin.
@@ -840,7 +840,7 @@ static void calc_map_table(pa_resampler *r) {
             /* OK, so there are unconnected input channels on the
              * left. Let's multiply all already connected channels on
              * the left side by .9 and add in our averaged unconnected
-             * channels multplied by .1 */
+             * channels multiplied by .1 */
 
             for (oc = 0; oc < n_oc; oc++) {
 
@@ -865,7 +865,7 @@ static void calc_map_table(pa_resampler *r) {
             /* OK, so there are unconnected input channels on the
              * right. Let's multiply all already connected channels on
              * the right side by .9 and add in our averaged unconnected
-             * channels multplied by .1 */
+             * channels multiplied by .1 */
 
             for (oc = 0; oc < n_oc; oc++) {
 
@@ -891,7 +891,7 @@ static void calc_map_table(pa_resampler *r) {
             /* OK, so there are unconnected input channels on the
              * center. Let's multiply all already connected channels on
              * the center side by .9 and add in our averaged unconnected
-             * channels multplied by .1 */
+             * channels multiplied by .1 */
 
             for (oc = 0; oc < n_oc; oc++) {
 
@@ -1369,13 +1369,14 @@ static int speex_init(pa_resampler *r) {
 
 static void trivial_resample(pa_resampler *r, const pa_memchunk *input, unsigned in_n_frames, pa_memchunk *output, unsigned *out_n_frames) {
     size_t fz;
-    unsigned o_index;
+    unsigned i_index, o_index;
     void *src, *dst;
 
     pa_assert(r);
     pa_assert(input);
     pa_assert(output);
     pa_assert(out_n_frames);
+    pa_assert(r->i_ss.channels == r->o_ss.channels);
 
     fz = r->w_sz * r->o_ss.channels;
 
@@ -1383,18 +1384,24 @@ static void trivial_resample(pa_resampler *r, const pa_memchunk *input, unsigned
     dst = (uint8_t*) pa_memblock_acquire(output->memblock) + output->index;
 
     for (o_index = 0;; o_index++, r->trivial.o_counter++) {
-        unsigned j;
+        i_index = (r->trivial.o_counter * r->i_ss.rate) / r->o_ss.rate;
+        i_index = i_index > r->trivial.i_counter ? i_index - r->trivial.i_counter : 0;
 
-        j = ((r->trivial.o_counter * r->i_ss.rate) / r->o_ss.rate);
-        j = j > r->trivial.i_counter ? j - r->trivial.i_counter : 0;
-
-        if (j >= in_n_frames)
+        if (i_index >= in_n_frames)
             break;
 
-        pa_assert(o_index * fz < pa_memblock_get_length(output->memblock));
+        pa_assert_fp(o_index * fz < pa_memblock_get_length(output->memblock));
 
-        memcpy((uint8_t*) dst + fz * o_index,
-                   (uint8_t*) src + fz * j, (int) fz);
+        /* Directly assign some common sample sizes, use memcpy as fallback */
+        if (r->w_sz == 2) {
+            for (unsigned c = 0; c < r->o_ss.channels; c++)
+                ((uint16_t *) dst)[o_index+c] = ((uint16_t *) src)[i_index+c];
+        } else if (r->w_sz == 4) {
+            for (unsigned c = 0; c < r->o_ss.channels; c++)
+                ((uint32_t *) dst)[o_index+c] = ((uint32_t *) src)[i_index+c];
+        } else {
+            memcpy((uint8_t *) dst + fz * o_index, (uint8_t *) src + fz * i_index, (int) fz);
+        }
     }
 
     pa_memblock_release(input->memblock);
@@ -1436,81 +1443,87 @@ static int trivial_init(pa_resampler*r) {
 
 static void peaks_resample(pa_resampler *r, const pa_memchunk *input, unsigned in_n_frames, pa_memchunk *output, unsigned *out_n_frames) {
     size_t fz;
-    unsigned o_index;
+    unsigned c, o_index = 0;
+    unsigned i, i_end = 0;
     void *src, *dst;
-    unsigned start = 0;
 
     pa_assert(r);
     pa_assert(input);
     pa_assert(output);
     pa_assert(out_n_frames);
+    pa_assert(r->i_ss.rate >= r->o_ss.rate);
+    pa_assert(r->work_format == PA_SAMPLE_S16NE || r->work_format == PA_SAMPLE_FLOAT32NE);
 
     fz = r->w_sz * r->o_ss.channels;
 
     src = (uint8_t*) pa_memblock_acquire(input->memblock) + input->index;
     dst = (uint8_t*) pa_memblock_acquire(output->memblock) + output->index;
 
-    for (o_index = 0;; o_index++, r->peaks.o_counter++) {
-        unsigned j;
+    i = ((r->peaks.o_counter * r->i_ss.rate) / r->o_ss.rate);
+    i = i > r->peaks.i_counter ? i - r->peaks.i_counter : 0;
 
-        j = ((r->peaks.o_counter * r->i_ss.rate) / r->o_ss.rate);
+    while (i_end < in_n_frames) {
+        i_end = (((r->peaks.o_counter+1) * r->i_ss.rate) / r->o_ss.rate);
+        i_end = i_end > r->peaks.i_counter ? i_end - r->peaks.i_counter : 0;
 
-        if (j > r->peaks.i_counter)
-            j -= r->peaks.i_counter;
-        else
-            j = 0;
+        pa_assert_fp(o_index * fz < pa_memblock_get_length(output->memblock));
 
-        pa_assert(o_index * fz < pa_memblock_get_length(output->memblock));
+        /* 1ch float is treated separately, because that is the common case */
+        if (r->o_ss.channels == 1 && r->work_format == PA_SAMPLE_FLOAT32NE) {
+            float *s = (float*) src + i;
+            float *d = (float*) dst + o_index;
 
-        if (r->work_format == PA_SAMPLE_S16NE) {
-            unsigned i, c;
-            int16_t *s = (int16_t*) ((uint8_t*) src + fz * start);
+            for (; i < i_end && i < in_n_frames; i++) {
+                float n = fabsf(*s++);
+
+                if (n > r->peaks.max_f[0])
+                    r->peaks.max_f[0] = n;
+            }
+
+            if (i == i_end) {
+                *d = r->peaks.max_f[0];
+                r->peaks.max_f[0] = 0;
+                o_index++, r->peaks.o_counter++;
+            }
+        } else if (r->work_format == PA_SAMPLE_S16NE) {
+            int16_t *s = (int16_t*) ((uint8_t*) src + fz * i);
             int16_t *d = (int16_t*) ((uint8_t*) dst + fz * o_index);
 
-            for (i = start; i <= j && i < in_n_frames; i++)
+            for (; i < i_end && i < in_n_frames; i++)
+                for (c = 0; c < r->o_ss.channels; c++) {
+                    int16_t n = abs(*s++);
 
-                for (c = 0; c < r->o_ss.channels; c++, s++) {
-                    int16_t n;
-
-                    n = (int16_t) (*s < 0 ? -*s : *s);
-
-                    if (PA_UNLIKELY(n > r->peaks.max_i[c]))
+                    if (n > r->peaks.max_i[c])
                         r->peaks.max_i[c] = n;
                 }
 
-            if (i >= in_n_frames)
-                break;
-
-            for (c = 0; c < r->o_ss.channels; c++, d++) {
-                *d = r->peaks.max_i[c];
-                r->peaks.max_i[c] = 0;
+            if (i == i_end) {
+                for (c = 0; c < r->o_ss.channels; c++, d++) {
+                    *d = r->peaks.max_i[c];
+                    r->peaks.max_i[c] = 0;
+                }
+                o_index++, r->peaks.o_counter++;
             }
-
         } else {
-            unsigned i, c;
-            float *s = (float*) ((uint8_t*) src + fz * start);
+            float *s = (float*) ((uint8_t*) src + fz * i);
             float *d = (float*) ((uint8_t*) dst + fz * o_index);
 
-            pa_assert(r->work_format == PA_SAMPLE_FLOAT32NE);
-
-            for (i = start; i <= j && i < in_n_frames; i++)
-                for (c = 0; c < r->o_ss.channels; c++, s++) {
-                    float n = fabsf(*s);
+            for (; i < i_end && i < in_n_frames; i++)
+                for (c = 0; c < r->o_ss.channels; c++) {
+                    float n = fabsf(*s++);
 
                     if (n > r->peaks.max_f[c])
                         r->peaks.max_f[c] = n;
                 }
 
-            if (i >= in_n_frames)
-                break;
-
-            for (c = 0; c < r->o_ss.channels; c++, d++) {
-                *d = r->peaks.max_f[c];
-                r->peaks.max_f[c] = 0;
+            if (i == i_end) {
+                for (c = 0; c < r->o_ss.channels; c++, d++) {
+                    *d = r->peaks.max_f[c];
+                    r->peaks.max_f[c] = 0;
+                }
+                o_index++, r->peaks.o_counter++;
             }
         }
-
-        start = j;
     }
 
     pa_memblock_release(input->memblock);

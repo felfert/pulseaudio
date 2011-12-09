@@ -23,7 +23,6 @@
 #include <config.h>
 #endif
 
-#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -39,12 +38,10 @@
 
 #include <pulsecore/core-error.h>
 #include <pulsecore/core-util.h>
-#include <pulsecore/socket-util.h>
 #include <pulsecore/log.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/strbuf.h>
 #include <pulsecore/ioline.h>
-#include <pulsecore/poll.h>
 #include <pulsecore/arpa-inet.h>
 
 #include "rtsp_client.h"
@@ -327,6 +324,7 @@ int pa_rtsp_connect(pa_rtsp_client *c) {
     pa_xfree(c->session);
     c->session = NULL;
 
+    pa_log_debug("Attempting to connect to server '%s:%d'", c->hostname, c->port);
     if (!(c->sc = pa_socket_client_new_string(c->mainloop, TRUE, c->hostname, c->port))) {
         pa_log("failed to connect to server '%s:%d'", c->hostname, c->port);
         return -1;

@@ -24,9 +24,9 @@
 #endif
 
 #include <pulse/xmalloc.h>
-#include <pulse/i18n.h>
 
 #include <pulsecore/core-util.h>
+#include <pulsecore/i18n.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/queue.h>
 
@@ -53,7 +53,7 @@ PA_MODULE_USAGE(
         "sink_properties=<properties for the sink> "
         "source_name=<name for the source> "
         "source_properties=<properties for the source> "
-        "namereg_fail=<pa_namereg_register() fail parameter value> "
+        "namereg_fail=<when false attempt to synthesise new names if they are already taken> "
         "device_id=<ALSA card index> "
         "format=<sample format> "
         "rate=<sample rate> "
@@ -64,9 +64,12 @@ PA_MODULE_USAGE(
         "tsched_buffer_size=<buffer size when using timer based scheduling> "
         "tsched_buffer_watermark=<lower fill watermark> "
         "profile=<profile name> "
+        "fixed_latency_range=<disable latency range changes on underrun?> "
         "ignore_dB=<ignore dB information from the device?> "
-        "sync_volume=<syncronize sw and hw voluchanges in IO-thread?> "
-        "profile_set=<profile set configuration file> ");
+        "deferred_volume=<Synchronize software and hardware volume changes to avoid momentary jumps?> "
+        "profile_set=<profile set configuration file> "
+        "paths_dir=<directory containing the path configuration files> "
+);
 
 static const char* const valid_modargs[] = {
     "name",
@@ -86,10 +89,12 @@ static const char* const valid_modargs[] = {
     "tsched",
     "tsched_buffer_size",
     "tsched_buffer_watermark",
+    "fixed_latency_range",
     "profile",
     "ignore_dB",
-    "sync_volume",
+    "deferred_volume",
     "profile_set",
+    "paths_dir",
     NULL
 };
 
@@ -291,6 +296,7 @@ int pa__init(pa_module *m) {
     struct userdata *u;
     pa_reserve_wrapper *reserve = NULL;
     const char *description;
+    const char *profile = NULL;
     char *fn = NULL;
     pa_bool_t namereg_fail = FALSE;
 
@@ -360,7 +366,7 @@ int pa__init(pa_module *m) {
      * variable is impossible. */
     namereg_fail = data.namereg_fail;
     if (pa_modargs_get_value_boolean(ma, "namereg_fail", &namereg_fail) < 0) {
-        pa_log("Failed to parse boolean argument namereg_fail.");
+        pa_log("Failed to parse namereg_fail argument.");
         pa_card_new_data_done(&data);
         goto fail;
     }
@@ -386,6 +392,9 @@ int pa__init(pa_module *m) {
         pa_card_new_data_done(&data);
         goto fail;
     }
+
+    if ((profile = pa_modargs_get_value(ma, "profile", NULL)))
+        pa_card_new_data_set_profile(&data, profile);
 
     u->card = pa_card_new(m->core, &data);
     pa_card_new_data_done(&data);

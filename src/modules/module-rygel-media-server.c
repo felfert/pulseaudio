@@ -28,18 +28,18 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <pulse/gccmacro.h>
 #include <pulse/xmalloc.h>
-#include <pulse/util.h>
-#include <pulse/i18n.h>
 #include <pulse/utf8.h>
 
+#include <pulsecore/i18n.h>
 #include <pulsecore/sink.h>
 #include <pulsecore/source.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/log.h>
+#include <pulsecore/macro.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/dbus-shared.h>
-#include <pulsecore/endianmacros.h>
 #include <pulsecore/namereg.h>
 #include <pulsecore/mime-type.h>
 #include <pulsecore/strbuf.h>
@@ -134,6 +134,7 @@ PA_MODULE_USAGE("display_name=<UPnP Media Server name>");
     " <interface name=\"org.gnome.UPnP.MediaItem2\">"                   \
     "  <property name=\"URLs\" type=\"as\" access=\"read\"/>"           \
     "  <property name=\"MIMEType\" type=\"s\" access=\"read\"/>"        \
+    " </interface>"                                                     \
     " <interface name=\"org.gnome.UPnP.MediaObject2\">"                 \
     "  <property name=\"Parent\" type=\"s\" access=\"read\"/>"          \
     "  <property name=\"Type\" type=\"s\" access=\"read\"/>"            \
@@ -910,6 +911,7 @@ static DBusHandlerResult sinks_and_sources_handler(DBusConnection *c, DBusMessag
             dbus_message_iter_init_append(r, &iter);
             pa_assert_se(dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "{sv}", &sub));
             append_sink_or_source_container_mediaobject2_properties(r, &sub, path);
+            pa_assert_se(dbus_message_iter_close_container(&iter, &sub));
 
         } else if (dbus_message_is_method_call(m, "org.freedesktop.DBus.Introspectable", "Introspect")) {
             pa_strbuf *sb;
@@ -980,6 +982,7 @@ static DBusHandlerResult sinks_and_sources_handler(DBusConnection *c, DBusMessag
 
             pa_assert_se(dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "{sv}", &sub));
             append_sink_or_source_item_mediaobject2_properties(r, &sub, path, sink, source);
+            pa_assert_se(dbus_message_iter_close_container(&iter, &sub));
 
         } else if (message_is_property_get(m, "org.gnome.UPnP.MediaItem2", "MIMEType")) {
             pa_assert_se(r = dbus_message_new_method_return(m));

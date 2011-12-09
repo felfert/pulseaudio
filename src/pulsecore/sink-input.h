@@ -29,7 +29,6 @@ typedef struct pa_sink_input pa_sink_input;
 
 #include <pulse/sample.h>
 #include <pulse/format.h>
-#include <pulsecore/hook-list.h>
 #include <pulsecore/memblockq.h>
 #include <pulsecore/resampler.h>
 #include <pulsecore/module.h>
@@ -110,7 +109,7 @@ struct pa_sink_input {
 
     pa_bool_t muted:1;
 
-    /* if TRUE then the source we are connected to and/or the volume
+    /* if TRUE then the sink we are connected to and/or the volume
      * set is worth remembering, i.e. was explicitly chosen by the
      * user and not automatically. module-stream-restore looks for
      * this.*/
@@ -145,11 +144,11 @@ struct pa_sink_input {
      * changes. Called from IO context. */
     void (*update_sink_requested_latency) (pa_sink_input *i); /* may be NULL */
 
-    /* Called whenver the latency range of the sink changes. Called
+    /* Called whenever the latency range of the sink changes. Called
      * from IO context. */
     void (*update_sink_latency_range) (pa_sink_input *i); /* may be NULL */
 
-    /* Called whenver the fixed latency of the sink changes, if there
+    /* Called whenever the fixed latency of the sink changes, if there
      * is one. Called from IO context. */
     void (*update_sink_fixed_latency) (pa_sink_input *i); /* may be NULL */
 
@@ -184,7 +183,7 @@ struct pa_sink_input {
      * context. */
     void (*kill) (pa_sink_input *i);             /* may NOT be NULL */
 
-    /* Return the current latency (i.e. length of bufferd audio) of
+    /* Return the current latency (i.e. length of buffered audio) of
     this stream. Called from main context. This is added to what the
     PA_SINK_INPUT_MESSAGE_GET_LATENCY message sent to the IO thread
     returns */
@@ -339,6 +338,7 @@ void pa_sink_input_request_rewind(pa_sink_input *i, size_t nbytes, pa_bool_t rew
 void pa_sink_input_cork(pa_sink_input *i, pa_bool_t b);
 
 int pa_sink_input_set_rate(pa_sink_input *i, uint32_t rate);
+int pa_sink_input_update_rate(pa_sink_input *i);
 
 /* This returns the sink's fields converted into out sample type */
 size_t pa_sink_input_get_max_rewind(pa_sink_input *i);
@@ -369,7 +369,7 @@ int pa_sink_input_move_to(pa_sink_input *i, pa_sink *dest, pa_bool_t save);
 pa_bool_t pa_sink_input_may_move(pa_sink_input *i); /* may this sink input move at all? */
 pa_bool_t pa_sink_input_may_move_to(pa_sink_input *i, pa_sink *dest); /* may this sink input move to this sink? */
 
-/* The same as pa_sink_input_move_to() but in two seperate steps,
+/* The same as pa_sink_input_move_to() but in two separate steps,
  * first the detaching from the old sink, then the attaching to the
  * new sink */
 int pa_sink_input_start_move(pa_sink_input *i);

@@ -46,15 +46,13 @@ vapi_DATA = \
 pkgconfigdir = $(libdir)/pkgconfig
 pkgconfig_DATA = libpulse.pc libpulse-simple.pc
 
-if HAVE_AVAHI
-pkgconfig_DATA += \
-	 libpulse-browse.pc
-endif
-
 if HAVE_GLIB20
 pkgconfig_DATA += \
 	 libpulse-mainloop-glib.pc
 endif
+
+cmakedir = $(libdir)/cmake/PulseAudio
+cmake_DATA = PulseAudioConfig.cmake PulseAudioConfigVersion.cmake
 
 homepage: all dist doxygen
 	test -d $$HOME/homepage/private

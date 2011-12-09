@@ -37,11 +37,11 @@
 
 #include <pulse/xmalloc.h>
 #include <pulse/timeval.h>
-#include <pulse/i18n.h>
 #include <pulse/version.h>
 
 #include <pulsecore/core-error.h>
 #include <pulsecore/core-util.h>
+#include <pulsecore/i18n.h>
 #include <pulsecore/strbuf.h>
 #include <pulsecore/conf-parser.h>
 #include <pulsecore/resampler.h>
@@ -95,12 +95,13 @@ static const pa_daemon_conf default_conf = {
     .no_cpu_limit = TRUE,
     .disable_shm = FALSE,
     .lock_memory = FALSE,
-    .sync_volume = TRUE,
+    .deferred_volume = TRUE,
     .default_n_fragments = 4,
     .default_fragment_size_msec = 25,
-    .sync_volume_safety_margin_usec = 8000,
-    .sync_volume_extra_delay_usec = 0,
+    .deferred_volume_safety_margin_usec = 8000,
+    .deferred_volume_extra_delay_usec = 0,
     .default_sample_spec = { .format = PA_SAMPLE_S16NE, .rate = 44100, .channels = 2 },
+    .alternate_sample_rate = 48000,
     .default_channel_map = { .channels = 2, .map = { PA_CHANNEL_POSITION_LEFT, PA_CHANNEL_POSITION_RIGHT } },
     .shm_size = 0
 #ifdef HAVE_SYS_RESOURCE_H
@@ -200,7 +201,7 @@ int pa_daemon_conf_set_log_target(pa_daemon_conf *c, const char *string) {
         pa_strlcpy(file_path, string + 5, sizeof(file_path));
 
         /* Open target file with user rights */
-        if ((log_fd = open(file_path, O_RDWR|O_TRUNC|O_CREAT, S_IRWXU)) >= 0) {
+        if ((log_fd = open(file_path, O_RDWR|O_TRUNC|O_CREAT, S_IRUSR | S_IWUSR)) >= 0) {
              c->auto_log_target = 0;
              c->log_target = PA_LOG_FD;
              pa_log_set_fd(log_fd);
@@ -370,12 +371,32 @@ static int parse_sample_rate(const char *filename, unsigned line, const char *se
     pa_assert(rvalue);
     pa_assert(data);
 
-    if (pa_atou(rvalue, &r) < 0 || r > (uint32_t) PA_RATE_MAX || r <= 0) {
+    if (pa_atou(rvalue, &r) < 0 || r > (uint32_t) PA_RATE_MAX || r <= 0 ||
+        !((r % 4000 == 0) || (r % 11025 == 0))) {
         pa_log(_("[%s:%u] Invalid sample rate '%s'."), filename, line, rvalue);
         return -1;
     }
 
     c->default_sample_spec.rate = r;
+    return 0;
+}
+
+static int parse_alternate_sample_rate(const char *filename, unsigned line, const char *section, const char *lvalue, const char *rvalue, void *data, void *userdata) {
+    pa_daemon_conf *c = data;
+    uint32_t r;
+
+    pa_assert(filename);
+    pa_assert(lvalue);
+    pa_assert(rvalue);
+    pa_assert(data);
+
+    if (pa_atou(rvalue, &r) < 0 || r > (uint32_t) PA_RATE_MAX || r <= 0 ||
+        !((r % 4000==0) || (r % 11025 == 0))) {
+        pa_log(_("[%s:%u] Invalid sample rate '%s'."), filename, line, rvalue);
+        return -1;
+    }
+
+    c->alternate_sample_rate = r;
     return 0;
 }
 
@@ -476,6 +497,10 @@ static int parse_nice_level(const char *filename, unsigned line, const char *sec
 }
 
 static int parse_rtprio(const char *filename, unsigned line, const char *section, const char *lvalue, const char *rvalue, void *data, void *userdata) {
+#ifdef OS_IS_WIN32
+    pa_log("[%s:%u] Realtime priority not available on win32.", filename, line);
+#else
+# ifdef HAVE_SCHED_H
     pa_daemon_conf *c = data;
     int32_t rtprio;
 
@@ -494,6 +519,9 @@ static int parse_rtprio(const char *filename, unsigned line, const char *section
 #endif
 
     c->realtime_priority = (int) rtprio;
+# endif
+#endif /* OS_IS_WIN32 */
+
     return 0;
 }
 
@@ -539,7 +567,7 @@ int pa_daemon_conf_load(pa_daemon_conf *c, const char *filename) {
         { "enable-shm",                 pa_config_parse_not_bool, &c->disable_shm, NULL },
         { "flat-volumes",               pa_config_parse_bool,     &c->flat_volumes, NULL },
         { "lock-memory",                pa_config_parse_bool,     &c->lock_memory, NULL },
-        { "enable-sync-volume",         pa_config_parse_bool,     &c->sync_volume, NULL },
+        { "enable-deferred-volume",     pa_config_parse_bool,     &c->deferred_volume, NULL },
         { "exit-idle-time",             pa_config_parse_int,      &c->exit_idle_time, NULL },
         { "scache-idle-time",           pa_config_parse_int,      &c->scache_idle_time, NULL },
         { "realtime-priority",          parse_rtprio,             c, NULL },
@@ -551,12 +579,15 @@ int pa_daemon_conf_load(pa_daemon_conf *c, const char *filename) {
         { "resample-method",            parse_resample_method,    c, NULL },
         { "default-sample-format",      parse_sample_format,      c, NULL },
         { "default-sample-rate",        parse_sample_rate,        c, NULL },
+        { "alternate-sample-rate",      parse_alternate_sample_rate, c, NULL },
         { "default-sample-channels",    parse_sample_channels,    &ci,  NULL },
         { "default-channel-map",        parse_channel_map,        &ci,  NULL },
         { "default-fragments",          parse_fragments,          c, NULL },
         { "default-fragment-size-msec", parse_fragment_size_msec, c, NULL },
-        { "sync-volume-safety-margin-usec", pa_config_parse_unsigned, &c->sync_volume_safety_margin_usec, NULL },
-        { "sync-volume-extra-delay-usec", pa_config_parse_int, &c->sync_volume_extra_delay_usec, NULL },
+        { "deferred-volume-safety-margin-usec",
+                                        pa_config_parse_unsigned, &c->deferred_volume_safety_margin_usec, NULL },
+        { "deferred-volume-extra-delay-usec",
+                                        pa_config_parse_int,      &c->deferred_volume_extra_delay_usec, NULL },
         { "nice-level",                 parse_nice_level,         c, NULL },
         { "disable-remixing",           pa_config_parse_bool,     &c->disable_remixing, NULL },
         { "enable-remixing",            pa_config_parse_not_bool, &c->disable_remixing, NULL },
@@ -740,7 +771,6 @@ char *pa_daemon_conf_dump(pa_daemon_conf *c) {
     pa_strbuf_printf(s, "enable-shm = %s\n", pa_yes_no(!c->disable_shm));
     pa_strbuf_printf(s, "flat-volumes = %s\n", pa_yes_no(c->flat_volumes));
     pa_strbuf_printf(s, "lock-memory = %s\n", pa_yes_no(c->lock_memory));
-    pa_strbuf_printf(s, "enable-sync-volume = %s\n", pa_yes_no(c->sync_volume));
     pa_strbuf_printf(s, "exit-idle-time = %i\n", c->exit_idle_time);
     pa_strbuf_printf(s, "scache-idle-time = %i\n", c->scache_idle_time);
     pa_strbuf_printf(s, "dl-search-path = %s\n", pa_strempty(c->dl_search_path));
@@ -753,12 +783,14 @@ char *pa_daemon_conf_dump(pa_daemon_conf *c) {
     pa_strbuf_printf(s, "enable-lfe-remixing = %s\n", pa_yes_no(!c->disable_lfe_remixing));
     pa_strbuf_printf(s, "default-sample-format = %s\n", pa_sample_format_to_string(c->default_sample_spec.format));
     pa_strbuf_printf(s, "default-sample-rate = %u\n", c->default_sample_spec.rate);
+    pa_strbuf_printf(s, "alternate-sample-rate = %u\n", c->alternate_sample_rate);
     pa_strbuf_printf(s, "default-sample-channels = %u\n", c->default_sample_spec.channels);
     pa_strbuf_printf(s, "default-channel-map = %s\n", pa_channel_map_snprint(cm, sizeof(cm), &c->default_channel_map));
     pa_strbuf_printf(s, "default-fragments = %u\n", c->default_n_fragments);
     pa_strbuf_printf(s, "default-fragment-size-msec = %u\n", c->default_fragment_size_msec);
-    pa_strbuf_printf(s, "sync-volume-safety-margin-usec = %u\n", c->sync_volume_safety_margin_usec);
-    pa_strbuf_printf(s, "sync-volume-extra-delay-usec = %d\n", c->sync_volume_extra_delay_usec);
+    pa_strbuf_printf(s, "enable-deferred-volume = %s\n", pa_yes_no(c->deferred_volume));
+    pa_strbuf_printf(s, "deferred-volume-safety-margin-usec = %u\n", c->deferred_volume_safety_margin_usec);
+    pa_strbuf_printf(s, "deferred-volume-extra-delay-usec = %d\n", c->deferred_volume_extra_delay_usec);
     pa_strbuf_printf(s, "shm-size-bytes = %lu\n", (unsigned long) c->shm_size);
     pa_strbuf_printf(s, "log-meta = %s\n", pa_yes_no(c->log_meta));
     pa_strbuf_printf(s, "log-time = %s\n", pa_yes_no(c->log_time));

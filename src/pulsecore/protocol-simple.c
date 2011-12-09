@@ -24,10 +24,8 @@
 #endif
 
 #include <stdlib.h>
-#include <limits.h>
 #include <stdio.h>
 #include <errno.h>
-#include <string.h>
 
 #include <pulse/xmalloc.h>
 #include <pulse/timeval.h>
@@ -87,7 +85,7 @@ enum {
 enum {
     CONNECTION_MESSAGE_REQUEST_DATA,      /* data requested from sink input from the main loop */
     CONNECTION_MESSAGE_POST_DATA,         /* data from source output to main loop */
-    CONNECTION_MESSAGE_UNLINK_CONNECTION    /* Please drop a aconnection now */
+    CONNECTION_MESSAGE_UNLINK_CONNECTION  /* Please drop the connection now */
 };
 
 #define PLAYBACK_BUFFER_SECONDS (.5)
@@ -562,10 +560,11 @@ void pa_simple_protocol_connect(pa_simple_protocol *p, pa_iochannel *io, pa_simp
         l = (size_t) ((double) pa_bytes_per_second(&o->sample_spec)*PLAYBACK_BUFFER_SECONDS);
         pa_sink_input_get_silence(c->sink_input, &silence);
         c->input_memblockq = pa_memblockq_new(
+                "simple protocol connection input_memblockq",
                 0,
                 l,
                 l,
-                pa_frame_size(&o->sample_spec),
+                &o->sample_spec,
                 (size_t) -1,
                 l/PLAYBACK_BUFFER_FRAGMENTS,
                 0,
@@ -593,7 +592,7 @@ void pa_simple_protocol_connect(pa_simple_protocol *p, pa_iochannel *io, pa_simp
         data.driver = __FILE__;
         data.module = o->module;
         data.client = c->client;
-        data.source = source;
+        pa_source_output_new_data_set_source(&data, source, FALSE);
         pa_proplist_update(data.proplist, PA_UPDATE_MERGE, c->client->proplist);
         pa_source_output_new_data_set_sample_spec(&data, &o->sample_spec);
 
@@ -613,10 +612,11 @@ void pa_simple_protocol_connect(pa_simple_protocol *p, pa_iochannel *io, pa_simp
 
         l = (size_t) (pa_bytes_per_second(&o->sample_spec)*RECORD_BUFFER_SECONDS);
         c->output_memblockq = pa_memblockq_new(
+                "simple protocol connection output_memblockq",
                 0,
                 l,
                 0,
-                pa_frame_size(&o->sample_spec),
+                &o->sample_spec,
                 1,
                 0,
                 0,

@@ -36,8 +36,7 @@
 
 #include <ltdl.h>
 
-#include <pulse/i18n.h>
-
+#include <pulsecore/i18n.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/log.h>
 
@@ -66,7 +65,7 @@
   relocations on any libraries that are already loaded into our
   process, i.e. because the pulseaudio binary links directly to
   them. To disable lazy relocations for those libraries it is possible
-  to set $LT_BIND_NOW before starting the pulsaudio binary.
+  to set $LT_BIND_NOW before starting the pulseaudio binary.
 */
 
 static lt_module bind_now_open(lt_user_data d, const char *fname, lt_dladvise advise) {
