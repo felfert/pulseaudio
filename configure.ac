@@ -99,7 +99,14 @@ IT_PROG_INTLTOOL([0.35.0])
 GETTEXT_PACKAGE=pulseaudio
 AC_SUBST([GETTEXT_PACKAGE])
 AC_DEFINE_UNQUOTED([GETTEXT_PACKAGE],["$GETTEXT_PACKAGE"],[Gettext package])
-AM_GLIB_GNU_GETTEXT
+
+dnl AM_GLIB_GNU_GETTEXT has a nasty side effect:
+dnl If it finds a working GNU gettext, it always
+dnl sets USE_NLS=yes. This obviously renders the
+dnl option --disable-nls useless.
+dnl So: invoke it conditionally.
+AS_IF([test x$USE_NLS = xyes],
+      [AM_GLIB_GNU_GETTEXT])
 
 pulselocaledir='${prefix}/${DATADIRNAME}/locale'
 AX_DEFINE_DIR(PULSE_LOCALEDIR, pulselocaledir, [Gettext locale dir])
@@ -440,6 +447,7 @@ AS_IF([test "x$os_is_win32" != "x1"],
 AS_IF([test "x$ax_pthread_ok" == "xyes"],
     AC_DEFINE([_POSIX_PTHREAD_SEMANTICS], 1, [Needed on Solaris]))
 
+
 #### Check for libs ####
 
 # ISO
@@ -522,25 +530,6 @@ AC_SYS_LARGEFILE
 # Check for open64 to know if the current system does have open64() and similar functions
 AC_CHECK_FUNCS_ONCE([open64])
 
-#### [lib]iconv ####
-
-AM_ICONV
-
-IT_PROG_INTLTOOL([0.35.0])
-GETTEXT_PACKAGE=pulseaudio
-AC_SUBST([GETTEXT_PACKAGE])
-AC_DEFINE_UNQUOTED([GETTEXT_PACKAGE],["$GETTEXT_PACKAGE"],[Gettext package])
-
-dnl AM_GLIB_GNU_GETTEXT has a nasty side effect:
-dnl If it finds a working GNU gettext, it always
-dnl sets USE_NLS=yes. This obviously renders the
-dnl option --disable-nls useless.
-dnl So: invoke it conditionally.
-AS_IF([test x$USE_NLS = xyes],
-      [AM_GLIB_GNU_GETTEXT])
-
-pulselocaledir='${prefix}/${DATADIRNAME}/locale'
-AC_SUBST(pulselocaledir)
 
 ###################################
 #      External libraries         #
